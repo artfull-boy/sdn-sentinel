@@ -1,0 +1,28 @@
+# Sentinel - Python dependencies
+#   python3 -m venv .venv && source .venv/bin/activate   (optional)
+#   pip install -r requirements.txt
+#
+# NOTE: these are PIP packages only. The lab also needs SYSTEM packages that
+# are NOT installed here:
+#   sudo apt install mininet openvswitch-switch iperf
+#   docker (for the ONOS container, see docker-compose.yml)
+
+# --- Testbed & red team (Ilias): topo, traffic_gen, attacks ---
+# traffic_gen.py / run_scenario.py / monitor.py use only the standard library.
+# flood.py and spoof.py need Scapy to forge Ethernet/ARP/ICMP frames.
+scapy==2.5.0
+
+# --- ML detection (Aishwarya): collector.py, detector.py, notebooks ---
+requests==2.32.3            # ONOS REST polling
+numpy==2.1.3
+pandas==2.2.3
+scikit-learn==1.5.2         # IMPORTANT: set this to the EXACT version Colab
+                            # reports (python -c "import sklearn; print(sklearn.__version__)").
+                            # The trained .joblib only loads cleanly on a
+                            # matching version. Aishwarya owns this pin.
+joblib==1.4.2
+prometheus-client==0.21.0   # exposes /metrics for Prometheus to scrape
+
+# --- Mitigation engine (Abdo): onos_client.py, engine.py ---
+# requests (above) for the ONOS REST API
+PyYAML==6.0.2               # reads playbooks.yaml
