@@ -3,8 +3,8 @@ services:
     image: onosproject/onos:2.7.0
     container_name: onos
     environment:
-      - ONOS_APPS=drivers,openflow,fwd
+      - ONOS_APPS=gui2,drivers,openflow,fwd
     ports:
       - "127.0.0.1:8181:8181"   # GUI/REST, localhost only (Lab 2 hardening)
       - "127.0.0.1:8101:8101"   # Karaf SSH, localhost only
-      - "6653:6653"             # OpenFlow for the switches
+      - "127.0.0.1:6653:6653"   # OpenFlow, only the local Mininet switches need it

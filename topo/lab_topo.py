@@ -73,8 +73,8 @@ class Lab1Topo(Topo):
 
 def main():
     parser = argparse.ArgumentParser(description="Lab 1 SDN topology for ONOS")
-    parser.add_argument("--controller-ip", default="172.17.0.2",
-                        help="ONOS IP address (default: Docker IP 172.17.0.2)")
+    parser.add_argument("--controller-ip", default="127.0.0.1",
+                    help="ONOS IP (default: 127.0.0.1, port published by docker compose)")
     parser.add_argument("--controller-port", type=int, default=6653,
                         help="ONOS OpenFlow port (default: 6653)")
     parser.add_argument("--link-s3", action="store_true",
