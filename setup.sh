@@ -14,7 +14,7 @@ sudo usermod -aG docker "$USER"
 # Python deps go into the SYSTEM python, not a venv: the attack scripts run as
 # root through `sudo` + `mnexec`, which ignores a venv and uses /usr/bin/python3.
 # --break-system-packages is required on recent Kali/Debian; fine on a lab VM.
-sudo pip install -r requirements.txt --break-system-packages
+#sudo pip install -r requirements.txt --break-system-packages
 
 echo
 echo "Setup done."
