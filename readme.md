@@ -68,7 +68,7 @@ offline in Google Colab and copied into `models/`.
 For teammates who just want it running:
 
 ```bash
-git clone https://github.com/<github-user>/sdn-sentinel.git
+git clone https://github.com/artfull-boy/sdn-sentinel.git
 cd sdn-sentinel
 ./setup.sh                        # once per VM
 cp .env.example .env              # then edit the passwords in .env
