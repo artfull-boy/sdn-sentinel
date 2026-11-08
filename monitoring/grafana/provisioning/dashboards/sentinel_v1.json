@@ -2,7 +2,7 @@
   "uid": "sentinel-v1",
   "title": "Sentinel v1",
   "schemaVersion": 39,
-  "version": 2,
+  "version": 3,
   "refresh": "5s",
   "time": {
     "from": "now-5m",
@@ -149,5 +149,6 @@
         "overrides": []
       }
     }
-  ]
+  ],
+  "graphTooltip": 1
 }
