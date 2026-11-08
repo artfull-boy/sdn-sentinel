@@ -1,0 +1,14 @@
+groups:
+  - name: lab2_rule_baseline
+    interval: 1s
+    rules:
+      - record: sentinel:new_flows:sum
+        expr: sum(sentinel_new_flows)
+
+      # 1 when the Lab 2 rule would fire: more than 30 new flows/s
+      # for 3 consecutive seconds, network-wide. Logging only.
+      - record: sentinel:rule_baseline:fired
+        expr: |
+          (sum(sentinel_new_flows) > bool 30)
+          * (sum(sentinel_new_flows offset 1s) > bool 30)
+          * (sum(sentinel_new_flows offset 2s) > bool 30)

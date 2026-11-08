@@ -1,0 +1,34 @@
+rule_files:
+  - rules.yml
+evaluation_interval: 1s
+tests:
+  - interval: 1s
+    input_series:
+      - series: 'sentinel_new_flows{switch="s1",port="all"}'
+        values: '0 0 40 40 40 40 0 0 40 40 0 0'
+    promql_expr_test:
+      - expr: sentinel:rule_baseline:fired
+        eval_time: 3s
+        exp_samples:
+          - labels: 'sentinel:rule_baseline:fired'
+            value: 0
+      - expr: sentinel:rule_baseline:fired
+        eval_time: 4s
+        exp_samples:
+          - labels: 'sentinel:rule_baseline:fired'
+            value: 1
+      - expr: sentinel:rule_baseline:fired
+        eval_time: 5s
+        exp_samples:
+          - labels: 'sentinel:rule_baseline:fired'
+            value: 1
+      - expr: sentinel:rule_baseline:fired
+        eval_time: 6s
+        exp_samples:
+          - labels: 'sentinel:rule_baseline:fired'
+            value: 0
+      - expr: sentinel:rule_baseline:fired
+        eval_time: 9s
+        exp_samples:
+          - labels: 'sentinel:rule_baseline:fired'
+            value: 0
