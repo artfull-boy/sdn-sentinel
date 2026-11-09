@@ -6,8 +6,7 @@ set -e
 # Docker (ONOS container), git, and pip itself.
 sudo apt update
 sudo apt install -y mininet openvswitch-switch iperf \
-                    docker.io docker-compose-plugin git python3-pip
-
+                    docker.io docker-compose git python3-pip
 # Let this user run docker without sudo (applies after next login).
 sudo usermod -aG docker "$USER"
 
