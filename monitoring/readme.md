@@ -1,4 +1,3 @@
-C:\Users\Admin>curl http://192.168.1.37:8000/readme.md
 # Sentinel: a self-defending SDN
 
 Group project for the **Security of SDN** course (University of Luxembourg).
