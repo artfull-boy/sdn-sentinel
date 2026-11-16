@@ -1,20 +1,4 @@
-# Sentinel: a self-defending SDN
-
-Group project for the **Security of SDN** course (University of Luxembourg).
-
-Sentinel watches the ONOS control plane per switch port, detects attacks with a two-stage
-machine learning model, names the attack type and installs the matching countermeasure
-automatically through the ONOS REST API. A Prometheus and Grafana dashboard shows the whole
-loop live. The Lab 2 threshold rule is kept as a baseline that the ML detector has to beat.
-
-| Person | Role | Main folders |
-| --- | --- | --- |
-| Ilias | Testbed and red team | `topo/`, `scenarios/` |
-| Aishwarya | ML detection | `sentinel/features.py`, `sentinel/collector.py`, `sentinel/detector.py`, `notebooks/` |
-| Abdo | Mitigation engine | `sentinel/engine.py`, `sentinel/onos_client.py` |
-| Nkwenti | Dashboard and evaluation | `monitoring/`, `eval/` |
-
----
+# Monitoring
 
 ## Contents
 
