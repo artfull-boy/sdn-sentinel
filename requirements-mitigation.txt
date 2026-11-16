@@ -1,0 +1,12 @@
+# Sentinel mitigation engine (Abdo): sentinel/engine.py, onos_client.py and its tests.
+# Installed into its own venv, mitvenv/, by ./start-mitigation.sh, so the team's .venv
+# and requirements.txt stay untouched. Everything else the engine uses is the
+# Python standard library; Mininet (for live_check.py) is linked from the system install.
+
+PyYAML==6.0.2               # reads sentinel/playbooks.yaml
+
+# Optional: let the engine read tau from models/sentinel_model.joblib. Uncomment with the
+# SAME versions the model was trained with (see requirements.txt). Without them, set
+# SENTINEL_TAU=<value> instead.
+# joblib==1.4.2
+# scikit-learn==1.3.2
