@@ -128,38 +128,5 @@ The script writes:
 
 The results describe only the supplied logs. Missing samples or events are not
 filled in or counted as successful detections.
-
-## Work remaining and report evidence
-
-Use the project responsibility sheet and coordinate live runs with the team.
-For Nkwenti's deliverables:
-
-1. Verify the dashboard against live collector, detector, and engine metrics.
-2. Record rule-baseline samples, audit logs, run labels, and S10 ping results
-   during the agreed core runs.
-3. Run the evaluator and save its CSV outputs under `results/`.
-4. Produce the ML-versus-rule and timing tables, collateral-damage results,
-   dashboard screenshots, and figures for the report.
-5. Edit the report's evaluation/results section and contribute to the final
-   slides.
-
-Use repeated live runs as agreed with the group; report the number of usable
-runs and call out missing inputs rather than presenting unavailable results as
-measurements.
-
-## Files owned by this part
-
-```text
-monitoring/prometheus.yml
-monitoring/rules.yml
-monitoring/grafana/provisioning/
-eval/evaluate.py
-eval/test_evaluate.py
-results/                 # generated tables and figures
-```
-
-Run the evaluation tests from the repository root with:
-
-```bash
-python3 -m unittest discover -s eval -v
+ 
 ```
