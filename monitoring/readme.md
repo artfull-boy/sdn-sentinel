@@ -40,11 +40,7 @@ dashboard is named **Sentinel**.
 
 Configuration is in `monitoring/prometheus.yml`; the baseline is in
 `monitoring/rules.yml`. Prometheus scrapes the collector, detector, and engine
-every **1 second** and evaluates the rule every **1 second**. Keep those
-intervals aligned with the project's one-second feature/data contract. A
-teammate polling ONOS every three seconds is a collector/data-production
-question; changing Prometheus's scrape interval alone does not change ONOS
-polling or restore per-second samples.
+every **1 second** and evaluates the rule every **1 second**. 
 
 The recording rule `sentinel:rule_baseline:fired` is `1` when the sum of
 `sentinel_new_flows` is over 30 for three consecutive one-second evaluations;
@@ -129,4 +125,3 @@ The script writes:
 The results describe only the supplied logs. Missing samples or events are not
 filled in or counted as successful detections.
  
-```
