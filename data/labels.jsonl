@@ -31,3 +31,12 @@
 {"run_id": "S7_20261109_062142", "scenario": "S7", "label": "spoofing", "attacker": "of:0000000000000001:1", "t_start": 1794226962.342, "t_end": 1794227023.27}
 {"run_id": "S7_20261109_062532", "scenario": "S7", "label": "spoofing", "attacker": "of:0000000000000001:1", "t_start": 1794227192.201, "t_end": 1794227253.276}
 {"run_id": "S7_20261109_063128", "scenario": "S7", "label": "spoofing", "attacker": "of:0000000000000001:1", "t_start": 1794227548.534, "t_end": 1794227609.681}
+{"run_id": "S2_run2", "scenario": "S2", "label": "normal", "attacker": null, "t_start": 1794216482.285, "t_end": 1794217400.593}
+{"run_id": "S2_20261117_022834", "scenario": "S2", "label": "normal", "attacker": null, "t_start": 1794904114.53, "t_end": 1794905016.184}
+{"run_id": "S2_20261117_091134", "scenario": "S2", "label": "normal", "attacker": null, "t_start": 1794928294.166, "t_end": 1794929195.975}
+{"run_id": "S3_20261117_092939", "scenario": "S3", "label": "normal", "attacker": null, "t_start": 1794929379.785, "t_end": 1794930288.881}
+{"run_id": "S3_20261117_094800", "scenario": "S3", "label": "normal", "attacker": null, "t_start": 1794930480.667, "t_end": 1794931383.782}
+{"run_id": "S5_20261117_134121", "scenario": "S5", "label": "slow_exhaustion", "attacker": "of:0000000000000001:1", "t_start": 1794944541.5, "t_end": 1794944604.53}
+{"run_id": "S5_20261117_135015", "scenario": "S5", "label": "slow_exhaustion", "attacker": "of:0000000000000001:1", "t_start": 1794945075.727, "t_end": 1794945138.098}
+{"run_id": "S6_20261117_135355", "scenario": "S6", "label": "flood", "attacker": "of:0000000000000001:1", "t_start": 1794945296.095, "t_end": 1794945364.886}
+{"run_id": "S6_20261117_135725", "scenario": "S6", "label": "flood", "attacker": "of:0000000000000001:1", "t_start": 1794945505.614, "t_end": 1794945574.562}
