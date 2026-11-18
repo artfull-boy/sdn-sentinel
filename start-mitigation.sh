@@ -7,10 +7,11 @@
 #   ./start-mitigation.sh live-check    full live check; starts its own Mininet, so stop any
 #                                       other Mininet first (needs sudo, ~2 min)
 #
-# Other settings (SENTINEL_TAU, ONOS_URL, GRAFANA_URL, ...) are read from the environment,
-# see docs/MITIGATION_README.md.
+# Other settings (SENTINEL_TAU, ONOS_URL, GRAFANA_TOKEN, ...) are read from the environment and
+# from the project's .env file if there is one; see docs/MITIGATION_README.md.
 set -e
 cd "$(dirname "$0")"
+if [ -f .env ]; then set -a; . ./.env; set +a; fi  # e.g. GRAFANA_TOKEN for dashboard annotations
 VENV=mitvenv
 PY=$VENV/bin/python3
 SYS_PY=/usr/bin/python3   # the system Python, where Mininet is installed

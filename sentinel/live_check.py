@@ -4,6 +4,7 @@ Run from the repo root: ./start-mitigation.sh live-check
 Starts the topology itself (so stop any other Mininet first), runs every
 'Expected results' row from the plan, then cleans everything up."""
 import importlib.util
+import itertools
 import json
 import os
 import re
@@ -12,6 +13,8 @@ import signal
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
 from functools import partial
 
@@ -40,6 +43,24 @@ def post(path, body):
 def alert(sw, port, typ="flood", conf=0.9, **more):
     return post("/mitigate", {"switch": sw, "port": str(port), "type": typ, "score": 1.0, "confidence": conf,
                               "ts": time.time(), **more})
+
+
+def get(path, base=ENGINE):
+    return urllib.request.urlopen(base + path, timeout=5).read().decode()
+
+
+def release_button(sw, port, origin):
+    """What the Release button on the engine's page sends. Returns the HTTP status."""
+    body = urllib.parse.urlencode({"switch": sw, "port": str(port)}).encode()
+    req = urllib.request.Request(ENGINE + "/release", body, {"Origin": origin})
+    try:
+        return urllib.request.urlopen(req, timeout=5).status
+    except urllib.error.HTTPError as e:
+        return e.code
+
+
+def active():
+    return set(json.loads(get("/status")))
 
 
 def ofctl(*args):
@@ -97,6 +118,11 @@ def ping_loss(src, dst, count=10, interval=0.2):
 
 def main():
     setLogLevel("warning")
+    try:
+        onos("/devices")
+    except Exception:
+        raise SystemExit("ONOS is not reachable on 127.0.0.1:8181. Start it first: "
+                         "docker compose up -d   (or: docker start onos), wait ~1 min, then retry.")
     subprocess.run(["mn", "-c"], capture_output=True)
     spec = importlib.util.spec_from_file_location("lab_topo", "topo/lab_topo.py")
     lab = importlib.util.module_from_spec(spec)
@@ -168,6 +194,15 @@ def main():
                 h.cmd("ip neigh flush all")
             return wait_for(lambda: ping_loss(h6, h2, count=2, interval=0.2) == 0, 15)
 
+        h6_targets = itertools.cycle([net.get(h) for h in ("h5", "h1", "h4", "h2")])
+
+        def h6_talks_and_is_home():
+            # A different peer each time, so the packet is not switched from cache and reaches ONOS
+            h6.cmd(f"ping -c 1 -W 1 {next(h6_targets).IP()}")
+            return any(h["mac"] == "00:00:00:00:00:06" and
+                       any(l["elementId"] == S3 and l["port"] == "2" for l in h["locations"])
+                       for h in onos("/hosts")["hosts"])
+
         def h6_blocked_on_s1_2():
             return any("dl_src=00:00:00:00:00:06" in l and "in_port=2" in l for l in sentinel_flows("s1"))
 
@@ -188,9 +223,9 @@ def main():
         r = alert(S1, 2, "spoofing")
         check("no history, no victim_mac -> fallback meter+flag_human", r["action"] == "meter+flag_human", str(r))
         post("/release", {"switch": S1, "port": "2"})
-        r = alert(S1, 2, "spoofing", victim_mac="00:00:00:00:00:01")
-        check("victim_mac not on that port (h1) is ignored -> fallback", r["action"] == "meter+flag_human"
-              and not any("dl_src=00:00:00:00:00:01" in l for l in sentinel_flows("s1")), str(r))
+        r = alert(S1, 2, "spoofing", victim_mac="00:00:00:00:00:99")
+        check("victim_mac seen nowhere is ignored -> fallback", r["action"] == "meter+flag_human"
+              and not any("dl_src=00:00:00:00:00:99" in l for l in sentinel_flows("s1")), str(r))
         post("/release", {"switch": S1, "port": "2"})
         r = alert(S1, 2, "spoofing", victim_mac="00:00:00:00:00:06")
         check("no history + victim_mac -> drop h6 MAC on s1:2", r["action"] == "drop_mac" and h6_blocked_on_s1_2(), str(r))
@@ -199,6 +234,49 @@ def main():
         recovered = unspoof_and_recover()
         check("h6 reachable again after release (victim from detector)", recovered is not None,
               f"after {recovered and round(recovered, 1)} s")
+
+        # 5c. Detector says "unknown" first, then "spoofing" + victim_mac, while ONOS has already
+        # flipped h6 back to its real port (the victim keeps talking). Fresh engine: h6 learnt at home.
+        stop_engine(engine)
+        engine = start_engine()
+        check("spoof h6 again", spoof_and_wait() is not None)
+        h6_home = wait_for(lambda: h6_talks_and_is_home(), 20)
+        check("ONOS flips h6 back to s3:2 while h3 impersonates it", h6_home is not None)
+        r = alert(S1, 2, "unknown")
+        metrics = get("/metrics")
+        check("unknown first -> meter + flag_human, flagged in /metrics", r["action"] == "meter+flag_human"
+              and f'sentinel_flag_human{{switch="{S1}",port="2"}} 1' in metrics
+              and 'type="unknown",action="meter+flag_human"' in metrics, str(r))
+        r = alert(S1, 2, "spoofing", victim_mac="00:00:00:00:00:06")
+        meter_left = [l for l in sentinel_flows("s1") if "priority=49000" in l and "in_port=2" in l]
+        check("then spoofing + victim_mac -> upgraded to drop h6 MAC, meter removed",
+              r["action"] == "drop_mac" and h6_blocked_on_s1_2() and not meter_left, str(r))
+        check("impostor frames dropped after upgrade", ping_loss(h3, h2, count=5) == 100)
+        check("h6 reachable during the block", ping_loss(h6, h2, count=5) == 0)
+        post("/release", {"switch": S1, "port": "2"})
+        recovered = unspoof_and_recover()
+        check("h6 reachable after release (upgrade case)", recovered is not None)
+
+        # 5d. unknown -> flood upgrade leaves exactly one meter and one metered flow
+        alert(S2, 1, "unknown")
+        r = alert(S2, 1, "flood")
+        meters = re.findall(r"meter[=:]\d", ofctl("dump-meters", "s2"))
+        flows = [l for l in sentinel_flows("s2") if "in_port=1" in l]
+        check("unknown then flood -> upgraded to the flood meter", r["action"] == "meter"
+              and len(meters) == 1 and len(flows) == 1, f"{r} meters={len(meters)} flows={len(flows)}")
+        post("/release", {"switch": S2, "port": "1"})
+
+        # 5e. Re-offender: auto release after 30 s quiet, the attack comes back -> straight to drop
+        alert(S2, 2, "flood")
+        released = wait_for(lambda: f"{S2} 2" not in active(), 45)
+        check("flood auto-released after 30 s quiet", released is not None and 28 <= released <= 35,
+              f"after {released and round(released)} s")
+        r = alert(S2, 2, "flood")
+        flows = sentinel_flows("s2")
+        check("re-offender within 5 min -> straight to drop, no meter", r["action"] == "drop"
+              and any("priority=50000" in l and "in_port=2" in l and "actions=drop" in l for l in flows)
+              and not re.search(r"meter[=:]\d", ofctl("dump-meters", "s2")), str(r))
+        post("/release", {"switch": S2, "port": "2"})
 
         # 6. Low confidence -> unknown playbook
         r = alert(S2, 1, "flood", conf=0.3)
@@ -213,6 +291,25 @@ def main():
         sixth = alert(S3, 2)["action"]
         check("5 actions allowed, 6th within a minute refused", acts == ["meter"] * 5 and sixth == "refused:rate_limit",
               f"{acts} then {sixth}")
+
+        # 7b. Operator page and Release button (what the Grafana link opens)
+        page = get("/release")
+        check("release page lists the 5 active mitigations", page.count("Release</button>") == 5)
+        check("Release from another website refused", release_button(S1, 1, "http://evil.example") == 403
+              and f"{S1} 1" in active())
+        code = release_button(S1, 1, "http://localhost:9202")
+        gone = wait_for(lambda: not [l for l in sentinel_flows("s1") if "in_port=1" in l], 5)
+        check("Release button removes the mitigation and its rules", code == 200
+              and f"{S1} 1" not in active() and gone is not None)
+
+        # 7c. The API listens on 127.0.0.1 only
+        ip = subprocess.run(["hostname", "-I"], capture_output=True, text=True).stdout.split()[0]
+        try:
+            get("/status", base=f"http://{ip}:9202")
+            reachable = True
+        except Exception:
+            reachable = False
+        check(f"engine not reachable from the network ({ip}:9202)", not reachable)
 
         # 8. Ctrl-C on the engine releases everything
         stop_engine(engine)
