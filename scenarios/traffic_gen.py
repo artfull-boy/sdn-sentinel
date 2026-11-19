@@ -92,13 +92,18 @@ def mode_pingall(end, args):
 
 
 def mode_iperf(end, args):
+    # S2 = heavy normal transfer: high bandwidth but FEW new flows. So run a
+    # small set of SUSTAINED transfers for the whole run, not many short ones
+    # (short transfers keep opening new TCP connections = new flows, which would
+    # blur the "few new flows" signal this scenario is meant to show).
     start_iperf_servers()
+    pairs = [("h2", "h6"), ("h4", "h5")]
+    secs = max(1, int(end - time.time()))
+    for src, dst in pairs:
+        log("sustained iperf %s -> %s for %d s" % (src, dst, secs))
+        in_host(src, ["iperf", "-c", HOSTS[dst], "-t", str(secs)], background=True)
     while time.time() < end:
-        src, dst = random_pair()
-        secs = random.randint(5, 20)
-        log("iperf %s -> %s for %d s" % (src, dst, secs))
-        in_host(src, ["iperf", "-c", HOSTS[dst], "-t", str(secs)])
-        time.sleep(random.uniform(2, 10))
+        time.sleep(1)
 
 
 def mode_mixed(end, args):

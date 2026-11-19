@@ -102,6 +102,11 @@ def main():
     info("*** s2-s3 data link: %s\n"
          % ("ADDED" if args.link_s3 else "absent (as in the lab sheet)"))
 
+
+    info("*** Disabling offloading on host interfaces (needed for TCP)\n")
+    for host in net.hosts:
+        host.cmd("ethtool -K %s rx off tx off sg off tso off gso off gro off"
+                 % host.defaultIntf())
     CLI(net)
     net.stop()
 
