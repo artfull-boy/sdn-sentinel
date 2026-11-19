@@ -219,3 +219,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Sentinel: data and models are shared outside Git (see docs/ML_REPRODUCE.md)
+data/raw/*
+!data/raw/.gitkeep
+data/*.csv
+models/
+logs/
+*.joblib

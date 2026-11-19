@@ -230,7 +230,7 @@ ONOS REST `8181`, ONOS CLI `8101`, OpenFlow `6653`.
 **Feature names** (one row per edge port per second, 10 s window):
 
 ```
-new_flows, new_flows_max_1s, burstiness, active_secs, uniq_src_mac, uniq_dst_mac,
+new_flows, new_flows_max_step, burstiness, active_steps, uniq_src_mac, uniq_dst_mac,
 rx_pkts, flows_per_pkt, hosts_on_port, host_moves_in, table_size_sw, table_growth
 ```
 
