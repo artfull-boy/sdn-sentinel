@@ -1,35 +1,30 @@
 # Sentinel ML detector
-
+ 
 This part of SDN Sentinel watches every edge port of the network and decides, every 2 seconds,
 whether a port is attacking the controller. If it is, the detector names the attack type and
 tells the mitigation engine (Abdo's part), which then limits or blocks the port.
-
+ 
 This README is the one guide for the ML part. It covers what the model is, how it detects
 attacks, how to run it **live against attacks you launch yourself**, how it works with the
 engine, and (sections 10-12) how to retrain it, rebuild the dataset and record new data.
-
+ 
 ---
-
+ 
 ## 1. Before you run anything
-
-The trained model is **not in Git** (it is a binary file). Get it first:
-
-1. Download `sentinel_model.joblib`: **https://drive.google.com/file/d/1R0Z6Rh5cLmLSq-RMOinEiqtHsrkIh6_l/view?usp=sharing** (view-only).
-2. From the repo root:
-   ```bash
-   mkdir -p models
-   mv ~/Downloads/sentinel_model.joblib models/
-   pip install -r requirements.txt        # needs scikit-learn 1.6.1 exactly
-   ```
-   scikit-learn must be **1.6.1**, the version that saved the model; the detector refuses to
-   start with another version.
-3. **Always run commands from the repo root** (the folder that contains `models/`), for
-   example `python -m sentinel.detector`. From inside `sentinel/` you get
-   `FileNotFoundError: models/sentinel_model.joblib`.
-
-The engine reads the same file (it takes the alarm line `tau` from it), so it must be in
-`models/` on every machine that runs the detector or the engine.
-
+ 
+```bash
+pip install -r requirements.txt        # needs scikit-learn 1.6.1 exactly
+```
+ 
+* The trained model is in the repo at `models/sentinel_model.joblib`. scikit-learn must be
+  **1.6.1**, the version that saved it; the detector refuses to start with another version.
+* **Always run commands from the repo root** (the folder that contains `models/` and
+  `sentinel/`), as `python -m sentinel.detector ...`. Running `python sentinel/detector.py`, or
+  running from inside `sentinel/`, fails with `No module named 'sentinel'` or
+  `FileNotFoundError: models/sentinel_model.joblib`.
+* On Windows, use `python` or `py`, not `python3`.
+The engine reads the same file (it takes the alarm line `tau` from it).
+ 
 ---
 
 ## 2. Where it fits
@@ -339,6 +334,7 @@ pulsed flood (S6) the old threshold panel stays quiet while the score crosses th
 | `--no-engine` | off | Detect and log only; send nothing to the engine |
 | `--log FILE` | none | Save every alert as JSON |
 | `--engine URL` | `http://localhost:9202` | Where the engine listens |
+| `--engine-timeout S` | 10 | How long to wait for the engine's reply. Alerts are sent in the background, so a slow engine never delays detection |
 | `--model PATH` | `models/sentinel_model.joblib` | Use another model file |
 | `--interval S` | 2.0 | Poll interval. Keep it at 2: the model was trained on 2 s snapshots |
 | `--metrics-port N` | 9201 (live) | 0 turns the metrics off |
@@ -351,21 +347,22 @@ ONOS address and login come from `ONOS_URL`, `ONOS_USER`, `ONOS_PASS`
 ---
 
 ## 8. Troubleshooting
-
+ 
 | Problem | Fix |
 | --- | --- |
-| `FileNotFoundError: models/sentinel_model.joblib` | Section 1: download the model, run from the repo root |
+| `FileNotFoundError: models/sentinel_model.joblib` or `No module named 'sentinel'` | Run from the repo root with `python -m sentinel.detector` (section 1) |
 | scikit-learn version error | `pip install scikit-learn==1.6.1` |
+| `No module named 'joblib'` / `'numpy'` / `'sklearn'` | `python -m pip install -r requirements.txt` (inside your venv) |
 | `cannot reach ONOS` | `docker ps`; wait 1-2 min after `docker restart onos` |
 | `warning: poll+score took ... s` | VM is overloaded: stop Grafana/Prometheus or `raw_recorder.py` during the test |
 | Alerts on a port that isn't attacking | Restart ONOS and `pingall` before starting the detector (old phantom hosts) |
 | No alert during spoofing | The detector was started after the attack began, or `pingall` wasn't run first |
 | `engine not reached` | Engine not running on :9202, or use `--no-engine` |
-
+ 
 ---
 
 ## 9. Files
-
+ 
 | File | In Git? | What it is |
 | --- | --- | --- |
 | `sentinel/detector.py` | yes | The live detector (and replay mode) |
@@ -375,11 +372,11 @@ ONOS address and login come from `ONOS_URL`, `ONOS_USER`, `ONOS_PASS`
 | `notebooks/add_new_runs.ipynb` | yes | Checks new recordings and adds them to the dataset; keeps the data history |
 | `data/labels.jsonl` | yes | One line per recorded run (attack type, attacker port, start and end time) |
 | `data/sample/*.jsonl` | yes | 3 small recordings for the replay check |
-| `models/sentinel_model.joblib` | no, Drive | The model (about 4.5 MB; section 1) |
+| `models/sentinel_model.joblib` | yes | The trained model (about 4.4 MB). Retraining in section 10 writes to your own Drive, never over this file |
 | `data/features.csv` | no, Drive | The training table: 34 runs, 43,038 rows (about 6 MB) |
 | `data/features_busy.csv` | no, Drive | Extra test set: 4 attack runs during heavy traffic, never trained on |
 | Raw recordings | no, Drive | 644 MB zip from 9 Nov plus the 17 Nov runs; only to rebuild the tables |
-
+ 
 ---
 
 ## 10. Retraining and checking the numbers (Colab, no VM)

@@ -1,12 +1,40 @@
 #!/usr/bin/env python3
 
-# Sentinel detector
+"""
+Sentinel detector: polls ONOS every 2 s, computes the features with
+sentinel/features.py, scores every edge port with the two-stage model, and
+tells the mitigation engine when a port looks like an attack.
+
+Two detection paths, as trained and evaluated in notebooks/train_sentinel.ipynb:
+  volume path    Isolation Forest score above tau for K windows in a row; the
+                 alert is then held for volume_hold more windows (smoothing, so
+                 intermittent attacks such as pulsed floods do not make it flicker;
+                 the hold cannot raise an alert by itself)
+  identity path  a host arrives on this port away from its home port
+                 (the port then stays flagged for spoof_hold more windows)
+The Random Forest then names the type; below min_conf it is "unknown".
+
+Alerts go to the engine as  POST <engine>/mitigate
+    {"switch", "port", "type", "score", "confidence", "ts"}
+sent when a port is first flagged, again if the type changes, and every
+RESEND_S seconds while it stays flagged. The engine owns rollback.
+
+RUN (from the repo root)
+  Live:    python -m sentinel.detector
+  Replay:  python -m sentinel.detector --replay data/raw/S4_run1.jsonl --no-engine
+           (reads a recording instead of ONOS: no VM, no ONOS, no engine needed)
+
+Options: --model PATH, --engine URL, --no-engine, --interval S, --speed X,
+         --metrics-port N (0 = off), --log FILE, --force (skip version check)
+Env:     ONOS_URL (default http://localhost:8181/onos/v1), ONOS_USER, ONOS_PASS
+"""
 
 import argparse
 import base64
 import json
 import os
 import sys
+import threading
 import time
 import urllib.request
 
@@ -153,14 +181,14 @@ class Detector:
 # Output: engine, metrics, log
 # --------------------------------------------------------------------------
 
-def post_engine(url, d):
+def post_engine(url, d, timeout):
     body = json.dumps({"switch": d["switch"], "port": d["port"], "type": d["type"],
                        "score": round(d["score"], 4), "confidence": round(d["confidence"], 3),
                        "ts": d["ts"]}).encode()
     req = urllib.request.Request(url.rstrip("/") + "/mitigate", data=body,
                                  headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=2) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.read().decode()[:200]
     except Exception as e:
         return "engine not reached (%s)" % e
@@ -201,25 +229,44 @@ def short(dev, port):
 # Main loops
 # --------------------------------------------------------------------------
 
+OUT_LOCK = threading.Lock()   # engine replies arrive on worker threads
+
+
+def emit(line, record, logf):
+    with OUT_LOCK:
+        print(line, flush=True)
+        if logf:
+            logf.write(json.dumps(record) + "\n")
+            logf.flush()
+
+
+def alert_line(reason, d, name, result):
+    path = "+".join(p for p in ("volume", "identity") if d[p])
+    return "%.1f  %-6s ALERT %-12s %-15s score=%.3f conf=%.2f via %s %s" % (
+        d["ts"], name, reason, d["type"], d["score"], d["confidence"], path,
+        ("-> " + result) if result else "")
+
+
+def send_and_emit(args, reason, d, name, logf):
+    """Runs on a worker thread, so a slow engine never delays the 2 s polling."""
+    result = post_engine(args.engine, d, args.engine_timeout)
+    emit(alert_line(reason, d, name, result), {"reason": reason, **d, "engine": result}, logf)
+
+
 def handle(det, metrics, rows, args, logf, summary):
     decisions = det.score_rows(rows)
     metrics.update(decisions, det.m["tau"])
     for reason, d in det.alerts(decisions):
         name = short(d["switch"], d["port"])
         if reason == "cleared":
-            line = "%.1f  %-6s cleared" % (d["ts"], name)
-            result = ""
+            emit("%.1f  %-6s cleared" % (d["ts"], name), {"reason": reason, **d, "engine": ""}, logf)
+            continue
+        summary.setdefault(name, []).append((d["ts"], d["type"]))
+        if args.no_engine:
+            emit(alert_line(reason, d, name, ""), {"reason": reason, **d, "engine": ""}, logf)
         else:
-            path = "+".join(p for p in ("volume", "identity") if d[p])
-            result = "" if args.no_engine else post_engine(args.engine, d)
-            line = "%.1f  %-6s ALERT %-12s %-15s score=%.3f conf=%.2f via %s %s" % (
-                d["ts"], name, reason, d["type"], d["score"], d["confidence"], path,
-                ("-> " + result) if result else "")
-            summary.setdefault(name, []).append((d["ts"], d["type"]))
-        print(line, flush=True)
-        if logf:
-            logf.write(json.dumps({"reason": reason, **d, "engine": result}) + "\n")
-            logf.flush()
+            threading.Thread(target=send_and_emit, args=(args, reason, d, name, logf),
+                             daemon=True).start()
 
 
 def run_replay(det, metrics, args, logf):
@@ -242,6 +289,9 @@ def run_replay(det, metrics, args, logf):
                 time.sleep(max(0.0, (obj["ts"] - prev_ts) / args.speed))
             prev_ts = obj["ts"]
             handle(det, metrics, fw.push(obj), args, logf, summary)
+    for t in threading.enumerate():          # let pending engine replies print
+        if t is not threading.current_thread():
+            t.join(args.engine_timeout + 1)
     print("\nsummary (seconds from start of recording):")
     if not summary:
         print("  no alerts")
@@ -280,6 +330,8 @@ def main():
     p.add_argument("--model", default="models/sentinel_model.joblib")
     p.add_argument("--engine", default="http://localhost:9202")
     p.add_argument("--no-engine", action="store_true", help="log alerts only, send nothing")
+    p.add_argument("--engine-timeout", type=float, default=10.0,
+                   help="seconds to wait for the engine's reply (sent in the background)")
     p.add_argument("--replay", help="score a recorded .jsonl instead of polling ONOS")
     p.add_argument("--speed", type=float, default=0, help="replay speed, 1 = real time, 0 = fast")
     p.add_argument("--interval", type=float, default=2.0, help="live poll interval (match the recordings)")
