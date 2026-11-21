@@ -67,15 +67,26 @@ collection or Prometheus scrape frequency.
 
 The services must export the shared metrics for their panels to show data:
 
-- Collector: `sentinel_new_flows` with `{switch, port}` labels.
-- Detector: `sentinel_anomaly_score` and
-  `sentinel_anomaly_threshold`; the latter is the current model threshold.
-- Detector: `sentinel_attack_type` as a one-hot gauge with
-  `{switch, port, type}` labels. Use `normal`, `flood`, `slow_exhaustion`, or
-  `spoofing`; set the current type to `1` and other types to `0`.
-- Engine: `sentinel_mitigation_active` and `sentinel_actions_total`.
-  `sentinel_actions_total` needs an `action` label for dashboard grouping and
-  annotations.
+- Collector (`monitoring/bridge_exporter.py`, :9200): `sentinel_new_flows`
+  (new flows per second, `{switch, port="all"}`), `sentinel_table_size`
+  (`{switch}`), plus `sentinel_poll_seconds`, `sentinel_poll_age_seconds`,
+  `sentinel_poll_errors_total`. Start it with
+  `python3 monitoring/bridge_exporter.py` (standard library only).
+- Detector (`sentinel/detector.py`, :9201): `sentinel_anomaly_score`,
+  `sentinel_window_new_flows` and `sentinel_attack_type`, all with
+  `{switch, port}` labels, and `sentinel_tau` (the model's alarm line).
+  `sentinel_attack_type` is a code: 0 none, 1 flood, 2 slow_exhaustion,
+  3 spoofing, 4 unknown. The dashboard maps these codes to names.
+- Engine (`sentinel/engine.py`, :9202): `sentinel_mitigation_active`,
+  `sentinel_actions_total` and `sentinel_flag_human`, all with
+  `{switch, port}` labels, and `sentinel_mitigation_info` (one series per
+  active mitigation, with `type`, `action`, `pinned`, `reoffend`, `flag_human`
+  labels) for the "Active mitigations" table. Clicking a port in that table
+  opens the engine's Release page (`http://localhost:9202/release`).
+  The engine also posts Grafana annotations (tag `sentinel`), shown as
+  "Engine actions". For those to arrive, put `GRAFANA_TOKEN=<service-account
+  token>` in `.env` (see `docs/MITIGATION_README.md` section 7.3), or start
+  the engine with `GRAFANA_AUTH=admin:<password from .env>`.
 
 These are shared integration contracts. If a target is `UP` but a panel is
 empty, check whether its service exports the metric and labels the panel

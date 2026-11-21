@@ -1,9 +1,55 @@
 {
   "uid": "sentinel-v1",
-  "title": "Sentinel v1",
+  "title": "Sentinel",
   "schemaVersion": 39,
-  "version": 3,
+  "version": 6,
   "refresh": "5s",
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      },
+      {
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "enable": true,
+        "expr": "changes(sentinel_actions_total[1m]) > 0",
+        "iconColor": "red",
+        "name": "Sentinel actions",
+        "tagKeys": "switch,port",
+        "titleFormat": "Sentinel action",
+        "textFormat": "action on {{switch}} port {{port}}"
+      },
+      {
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "iconColor": "orange",
+        "name": "Engine actions",
+        "target": {
+          "type": "tags",
+          "tags": [
+            "sentinel"
+          ],
+          "limit": 100,
+          "matchAny": false
+        }
+      }
+    ]
+  },
   "time": {
     "from": "now-5m",
     "to": "now"
@@ -12,7 +58,7 @@
     {
       "id": 1,
       "type": "timeseries",
-      "title": "Flow table size (all switches)",
+      "title": "Flow table size (74-rule reference)",
       "gridPos": {
         "h": 10,
         "w": 12,
@@ -37,7 +83,6 @@
       "fieldConfig": {
         "defaults": {
           "unit": "short",
-          "min": 0,
           "custom": {
             "thresholdsStyle": {
               "mode": "line"
@@ -63,7 +108,7 @@
     {
       "id": 2,
       "type": "timeseries",
-      "title": "New flows per second (threshold 30)",
+      "title": "New flows per second (rule threshold 30)",
       "gridPos": {
         "h": 10,
         "w": 12,
@@ -85,6 +130,17 @@
           }
         }
       ],
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "short",
@@ -147,6 +203,503 @@
           }
         },
         "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Anomaly score and model threshold (τ)",
+      "description": "Isolation Forest score per edge port (sentinel_anomaly_score) and the model's alarm line (sentinel_tau), both from the detector on :9201.",
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 17
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sentinel_anomaly_score",
+          "legendFormat": "{{switch}} / {{port}} score",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "max(sentinel_tau)",
+          "legendFormat": "τ (model threshold)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "type": "state-timeline",
+      "title": "Detected attack type by port",
+      "description": "sentinel_attack_type from the detector: 0 none, 1 flood, 2 slow_exhaustion, 3 spoofing, 4 unknown.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 26
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sentinel_attack_type",
+          "legendFormat": "{{switch}} / {{port}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "options": {
+        "mergeValues": true,
+        "showValue": "never",
+        "alignValue": "center",
+        "rowHeight": 0.9,
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 0,
+            "fillOpacity": 70
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "none",
+                  "color": "green",
+                  "index": 0
+                },
+                "1": {
+                  "text": "flood",
+                  "color": "red",
+                  "index": 1
+                },
+                "2": {
+                  "text": "slow_exhaustion",
+                  "color": "orange",
+                  "index": 2
+                },
+                "3": {
+                  "text": "spoofing",
+                  "color": "purple",
+                  "index": 3
+                },
+                "4": {
+                  "text": "unknown",
+                  "color": "yellow",
+                  "index": 4
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 6,
+      "type": "state-timeline",
+      "title": "Active mitigations by port",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 26
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sentinel_mitigation_active",
+          "legendFormat": "{{switch}} / {{port}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "options": {
+        "mergeValues": true,
+        "showValue": "never",
+        "alignValue": "center",
+        "rowHeight": 0.9,
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "custom": {
+            "lineWidth": 0,
+            "fillOpacity": 70
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "inactive",
+                  "color": "green"
+                },
+                "1": {
+                  "text": "active",
+                  "color": "red"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "ML detection vs Lab 2 rule",
+      "description": "The ML series is 1 while any non-normal attack type is active. The rule series is the recording rule, also 0 or 1.",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 34
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(sentinel:rule_baseline:fired)",
+          "legendFormat": "Lab 2 rule",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "(max(sentinel_attack_type) > bool 0) or vector(0)",
+          "legendFormat": "ML detection",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 20,
+            "showPoints": "never"
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "no detection",
+                  "color": "green"
+                },
+                "1": {
+                  "text": "detected",
+                  "color": "red"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Mitigation actions",
+      "description": "Actions taken by the engine per port in the last minute (install and escalation). Engine annotations (tag 'sentinel') carry the action name.",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 42
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (switch, port) (increase(sentinel_actions_total[1m]))",
+          "legendFormat": "{{switch}} / {{port}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "unit": "short",
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 1,
+            "fillOpacity": 60
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 9,
+      "type": "stat",
+      "title": "Mitigated ports",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 50
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(sentinel_mitigation_active) or vector(0)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 10,
+      "type": "stat",
+      "title": "Ports waiting for a person",
+      "description": "sentinel_flag_human: ports limited by the 'unknown' playbook. They are never released automatically; release them from the table.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 54
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(sentinel_flag_human) or vector(0)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 11,
+      "type": "table",
+      "title": "Active mitigations",
+      "description": "One row per active mitigation (sentinel_mitigation_info). Click a port to open the engine's Release page.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 18,
+        "x": 6,
+        "y": 50
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sentinel_mitigation_info",
+          "format": "table",
+          "instant": true,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value": true,
+              "__name__": true,
+              "job": true,
+              "instance": true
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "port"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Release",
+                    "targetBlank": true,
+                    "url": "http://localhost:9202/release?switch=${__data.fields.switch}&port=${__data.fields.port}"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true
       }
     }
   ],
