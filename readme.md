@@ -72,11 +72,19 @@ git clone https://github.com/artfull-boy/sdn-sentinel.git
 cd sdn-sentinel
 ./setup.sh                        # once per VM
 cp .env.example .env              # then edit the passwords in .env
-docker compose up -d              # ONOS, Prometheus, Grafana
-# wait about 1 to 2 minutes for ONOS to start
-sudo python3 topo/lab_topo.py --link-s3
-mininet> pingall                  # expect 0% dropped
+
+# one-time Python env (Python 3.14 cannot install scikit-learn 1.6.1, use 3.12):
+uv venv -p 3.12 .venv && uv pip install -p .venv/bin/python -r requirements.txt
+# put models/sentinel_model.joblib in place (docs/ML_DETECTOR_README.md section 1)
+
+./start-sentinel.sh               # ONOS, Prometheus, Grafana + all Sentinel services
+mininet> pingall                  # the detector starts automatically once hosts are learnt
 ```
+
+`./start-sentinel.sh` brings the whole lab up: it waits for ONOS, clears phantom
+hosts, starts the bridge exporter (:9200), engine (:9202) and detector (:9201),
+and the topology. Other commands: `status`, `stop`, `down`, `clean`, `logs`.
+To bring everything up by hand instead, follow the step-by-step setup below.
 
 ---
 
@@ -148,16 +156,21 @@ controller at `127.0.0.1:6653`.
 
 ### 5. Start the Sentinel services
 
-These are being built during the project; the commands below are the agreed entry points.
+`./start-sentinel.sh` (see Quick start) starts all three services for you. To
+run them by hand instead, from the repo root:
 
 ```bash
+python3 monitoring/bridge_exporter.py        # :9200  Lab 2 baseline (new flows/s, table size)
 . .venv/bin/activate
-python -m sentinel.collector                 # :9200  live mode
-python -m sentinel.collector --record data/raw/run_01.csv   # record mode
-python -m sentinel.detector                  # :9201  needs models/sentinel_model.joblib
-DRY_RUN=1 python -m sentinel.engine          # :9202  logs decisions, installs nothing
-python -m sentinel.engine                    # :9202  real mitigation
+python -m sentinel.detector --log logs/alerts.jsonl   # :9201  needs models/sentinel_model.joblib
+DRY_RUN=1 ./start-mitigation.sh              # :9202  logs decisions, installs nothing
+./start-mitigation.sh                        # :9202  real mitigation (its own mitvenv/)
 ```
+
+Start the detector only after `pingall`, so it learns every host at its real
+home port. The detector polls ONOS itself and publishes its metrics on :9201;
+there is no separate `sentinel.collector`. Engine details:
+`docs/MITIGATION_README.md`. Detector details: `docs/ML_DETECTOR_README.md`.
 
 ---
 
