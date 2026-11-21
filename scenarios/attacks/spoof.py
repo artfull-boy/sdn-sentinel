@@ -22,6 +22,7 @@ Run inside a host's namespace (run_scenario.py does this for you):
 
 import argparse
 import os
+import re
 import sys
 import time
 
@@ -61,6 +62,11 @@ def main():
     args = p.parse_args()
 
     iface = args.iface or detect_iface()
+    # Lab lock: only ever send from a Mininet host interface (h1-eth0, h3-eth0,
+    # ...), never the VM's real NIC. Blocks e.g. --iface eth0 in the root namespace.
+    if not re.fullmatch(r"h\d+-eth0", iface):
+        sys.exit("refusing %s: only Mininet host interfaces (h1-eth0, h3-eth0, ...)"
+                 % iface)
     if not os.path.exists("/sys/class/net/%s" % iface):
         sys.exit("%s not found. Run this inside a Mininet host "
                  "(mnexec -a <host-pid> ...)." % iface)
