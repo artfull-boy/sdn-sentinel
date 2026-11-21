@@ -66,6 +66,23 @@ t0 = time.time()
 # Guardrail: switch-to-switch port is refused
 assert alert("3")["action"] == "refused:infra_port"
 
+# The link map is cached (no ONOS call on the alert path). With ONOS down, a fresh cache still
+# protects switch links; once the cache is too old, new mitigations are refused (fail closed).
+calls = []
+
+
+def onos_down():
+    calls.append(1)
+    raise OSError("ONOS down")
+
+
+real_infra, onos.infra_ports = onos.infra_ports, onos_down
+assert alert("3")["action"] == "refused:infra_port" and not calls
+engine.INFRA["at"] -= engine.INFRA_MAX_AGE_S + 1
+assert alert("14")["action"] == "refused:onos_unreachable" and calls and (SW, "14") not in engine.ACTIVE
+onos.infra_ports = real_infra
+engine.refresh_infra()
+
 # Flood: meter + metered flow, duplicate refused, drop after 15 s while hot, release after 30 s quiet
 r = alert("1")
 assert r["action"] == "meter" and len(r["rule_ids"]) == 2, r

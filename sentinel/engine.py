@@ -86,6 +86,22 @@ def hot_ports():
     return hot
 
 
+INFRA = {"ports": None, "at": 0.0}  # switch-to-switch ports, cached: refreshed every second by tick()
+INFRA_MAX_AGE_S = 5
+
+
+def refresh_infra():
+    INFRA["ports"], INFRA["at"] = onos.infra_ports(), time.time()
+
+
+def infra_ports():
+    """Switch-to-switch ports without a call to ONOS on the alert path: during a flood each ONOS
+    call can take 1-2.5 s. Raises if the cache is too old and ONOS can't be reached (fail closed)."""
+    if INFRA["ports"] is None or time.time() - INFRA["at"] > INFRA_MAX_AGE_S:
+        refresh_infra()
+    return INFRA["ports"]
+
+
 def learn_hosts():
     try:
         seen = onos.hosts()
@@ -226,8 +242,8 @@ def mitigate(req):
                 return reply(upgrade(key, m, typ, score, conf, victim_mac, extra))
             return reply(audit(key, typ, score, conf, "refused:duplicate", **extra))
         try:
-            infra = onos.infra_ports()
-        except Exception as e:  # fail closed: no link map, no action
+            infra = infra_ports()
+        except Exception as e:  # fail closed: no recent link map, no action
             return reply(audit(key, typ, score, conf, "refused:onos_unreachable", f"error: {e}", **extra))
         if key in infra:
             return reply(audit(key, typ, score, conf, "refused:infra_port", **extra))
@@ -288,6 +304,10 @@ def tick(now=None, hot=None):
     now = now or time.time()
     hot = hot_ports() if hot is None else hot
     learn_hosts()
+    try:
+        refresh_infra()
+    except Exception:
+        pass  # the cache ages out after INFRA_MAX_AGE_S and new mitigations are then refused
     with LOCK:
         for key, m in list(ACTIVE.items()):
             if key in hot:
@@ -375,11 +395,14 @@ HTML = "text/html; charset=utf-8"
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code, body, ctype="application/json"):
         data = (body if isinstance(body, str) else json.dumps(body)).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # the client stopped waiting; the action itself was already applied and audited
 
     def do_GET(self):
         url = urlsplit(self.path)
