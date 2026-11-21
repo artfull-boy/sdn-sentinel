@@ -5,7 +5,7 @@ The mitigation engine is the part of Sentinel that **reacts** to an attack. The 
 switch port through ONOS. It logs every decision and removes the countermeasure once the attack is over.
 
 It is a small HTTP API server (JSON) on **`127.0.0.1:9202`**, written with the Python standard library.
-Owner: Abdo. Questions about the API: see section 6, every endpoint has a copy-paste example.
+Owner: Abdou. Questions about the API: see section 6, every endpoint has a copy-paste example.
 
 ## 1. Quick start (in the VM, from the project folder)
 
@@ -133,7 +133,7 @@ which `start-mitigation.sh` loads.
 | `ENGINE_HOST` | `127.0.0.1` | Address the API listens on. Keep the default |
 | `ONOS_URL` | `http://127.0.0.1:8181/onos/v1` | ONOS REST API |
 | `ONOS_AUTH` | `onos:rocks` | ONOS user:password |
-| `SENTINEL_TAU` | read from `models/sentinel_model.joblib` (only if `joblib` and `scikit-learn` are uncommented in `requirements-mitigation.txt`) | Threshold τ |
+| `SENTINEL_TAU` | read from `models/sentinel_model.joblib` (only if `joblib` and `scikit-learn` are uncommented in `requirements-mitigation.txt`), else none | Threshold τ. Set it in `.env` (template in `.env.example`) once the detector's notebook 02 gives the value. Without it the engine prints `tau=None` and relies on repeated `/mitigate` calls only |
 | `DETECTOR_METRICS` | `http://127.0.0.1:9201/metrics` | Where the engine reads live anomaly scores |
 | `GRAFANA_URL` | `http://127.0.0.1:3000` | Where annotations are sent (empty = off) |
 | `GRAFANA_TOKEN` | unset | Grafana service-account token for annotations (preferred, see 7.3) |
@@ -403,7 +403,7 @@ About 2 seconds, fake ONOS: playbooks, guardrails, upgrade, re-offender, victim 
 The real test, about 4 minutes. ONOS must be up and **no other Mininet running** (the script starts its own
 topology). It runs every "Expected results" row of the project plan plus the scenarios in section 4
 (no-history spoofing, `unknown` then `spoofing` while ONOS flips the victim back, `unknown` then `flood`,
-a real re-offender, the release page) and prints `40/40 passed`. Its audit lines go to
+a real re-offender, the release page, a pinned flood kept past its release time) and prints `44/44 passed`. Its audit lines go to
 `logs/live_check_audit.jsonl` so the real audit log stays clean. It asks for sudo because Mininet needs root;
 the engine it starts runs as your own user.
 

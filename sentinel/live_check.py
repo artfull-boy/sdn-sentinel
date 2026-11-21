@@ -317,6 +317,24 @@ def main():
         left = sum(len(sentinel_flows(s)) for s in ("s1", "s2", "s3"))
         check("engine shutdown releases every rule", left == 0, f"{left} Sentinel flows left")
 
+        # 8b. /pin keeps a real mitigation past its automatic release, /release then removes it
+        engine = start_engine()
+        alert(S3, 1, "flood")
+        r = post("/pin", {"switch": S3, "port": "1"})
+        check("pin a flood on s3:1", r["action"] == "pin" and 'pinned="1"' in get("/metrics"), str(r))
+        time.sleep(35)  # a flood is normally released after 30 s calm
+        rules = [l for l in sentinel_flows("s3") if "in_port=1" in l]
+        check("pinned flood still active after 35 s, rules still in the switch",
+              f"{S3} 1" in active() and len(rules) == 1, f"{len(rules)} flows")
+        r = post("/release", {"switch": S3, "port": "1"})
+        gone = wait_for(lambda: not [l for l in sentinel_flows("s3") if "in_port=1" in l], 5)
+        check("release of the pinned port removes its rules", r["action"] == "release:manual" and gone is not None)
+        r1, r2 = post("/pin", {"switch": S3, "port": "1"}), post("/release", {"switch": S3, "port": "1"})
+        check("pin and release on an inactive port -> refused:not_active",
+              r1["action"] == r2["action"] == "refused:not_active", f"{r1['action']}, {r2['action']}")
+        stop_engine(engine)
+        engine = None
+
         # 9. Dry run is harmless
         engine = start_engine(dry=True)
         r = alert(S1, 1)

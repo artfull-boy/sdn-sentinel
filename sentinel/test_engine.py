@@ -203,7 +203,16 @@ new_minute()
 code, body = http("/mitigate", json.dumps({"switch": SW, "port": "4", "type": "flood", "confidence": 0.9}).encode(),
                   {"Content-Type": "application/json"})
 assert code == 200 and json.loads(body)["action"] == "meter"
-assert http("/release", json.dumps({"switch": SW, "port": "4"}).encode())[0] == 200
+port4 = json.dumps({"switch": SW, "port": "4"}).encode()
+code, body = http("/pin", port4)
+assert code == 200 and json.loads(body)["action"] == "pin" and engine.ACTIVE[(SW, "4")]["pinned"], body
+assert 'pinned="1"' in http("/metrics")[1]
+engine.tick(now=time.time() + 1000, hot=set())  # far past the 30 s rollback: a pinned port stays
+assert (SW, "4") in engine.ACTIVE
+code, body = http("/release", port4)
+assert code == 200 and json.loads(body)["action"] == "release:manual" and (SW, "4") not in engine.ACTIVE
+assert json.loads(http("/pin", port4)[1])["action"] == "refused:not_active"      # nothing to pin
+assert json.loads(http("/release", port4)[1])["action"] == "refused:not_active"  # nothing to release
 assert http("/mitigate", b"not json")[0] == 400
 assert http("/mitigate", b'{"port": "4"}')[0] == 400
 assert http("/nope")[0] == 404
