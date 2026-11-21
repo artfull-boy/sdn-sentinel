@@ -29,6 +29,7 @@ Run inside a host's namespace (run_scenario.py does this for you):
 import argparse
 import os
 import random
+import re
 import subprocess
 import sys
 import time
@@ -56,12 +57,12 @@ def detect_iface():
 def iface_ipv4(iface):
     """The IPv4 address on iface, so the flood's source IP matches the host it
     runs from. Falls back to h1's address if it can't be read."""
+    out = subprocess.run(["ip", "-4", "-o", "addr", "show", iface],
+                         capture_output=True, text=True).stdout
     try:
-        out = subprocess.run(["ip", "-4", "-o", "addr", "show", iface],
-                             capture_output=True, text=True).stdout
         return out.split("inet ")[1].split("/")[0]
-    except Exception:
-        return "10.0.1.1"
+    except IndexError:
+        sys.exit("could not read an IPv4 address on %s" % iface)
 
 
 def random_mac():
@@ -99,6 +100,11 @@ def main():
     args = p.parse_args()
 
     IFACE = args.iface or detect_iface()
+    # Lab lock: only ever send from a Mininet host interface (h1-eth0, h3-eth0,
+    # ...), never the VM's real NIC. Blocks e.g. --iface eth0 in the root namespace.
+    if not re.fullmatch(r"h\d+-eth0", IFACE):
+        sys.exit("refusing %s: only Mininet host interfaces (h1-eth0, h3-eth0, ...)"
+                 % IFACE)
     if not os.path.exists("/sys/class/net/%s" % IFACE):
         sys.exit("%s not found. Run this inside a Mininet host "
                  "(mnexec -a <host-pid> ...)." % IFACE)
