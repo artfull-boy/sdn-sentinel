@@ -16,7 +16,7 @@ scapy==2.5.0
 requests==2.32.3            # ONOS REST polling
 numpy==2.1.3
 pandas==2.2.3
-scikit-learn==1.5.2         # IMPORTANT: set this to the EXACT version Colab
+scikit-learn==1.6.1        # IMPORTANT: set this to the EXACT version Colab
                             # reports (python -c "import sklearn; print(sklearn.__version__)").
                             # The trained .joblib only loads cleanly on a
                             # matching version. Aishwarya owns this pin.

