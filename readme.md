@@ -209,6 +209,8 @@ Six hosts and three switches. The switches use `datapath="user"` and connect to 
 The topology also disables NIC offloading on every host so TCP (iperf) actually flows on the
 userspace datapath.
 
+![Test network](docs/topology.png)
+
 | Host | IP | Switch:port | Role |
 | --- | --- | --- | --- |
 | h1 | 10.0.1.1 | s1:1 | attacker |
