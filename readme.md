@@ -43,7 +43,7 @@ loop live. The Lab 2 threshold rule is kept as a baseline that the ML detector h
    attack type.
 4. The **mitigation engine** receives the alert and the attack type.
 5. The engine installs the countermeasure through ONOS REST (an OpenFlow meter or a drop rule)
-   and removes it after recovery.
+   and rules are removed once the switch's own counters show the attack stopped.
 
 Prometheus and Grafana only observe; they are not in the decision path. The model is trained
 offline in Google Colab and copied into `models/`.
@@ -265,6 +265,9 @@ POST /mitigate   {"switch", "port", "type", "score", "confidence", "ts"}
                  -> {"action", "rule_ids", "dry_run"}
 POST /release    {"switch", "port"}
 POST /pin        {"switch", "port"}
+• the optional victim_mac field
+• GET /status, GET /metrics and the GET /release page
+• a link to the full reference
 ```
 
 **Prometheus metrics** (labels `{switch, port}`): `sentinel_new_flows`,
