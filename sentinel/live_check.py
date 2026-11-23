@@ -110,6 +110,45 @@ def wait_for(fn, timeout):
     return None
 
 
+# A flood with a new random source MAC on every packet (like scenarios/attacks/flood.py), written
+# with a raw socket so it needs no scapy. Runs inside a Mininet host: <iface> <dst_mac> <dst_ip> <pps> <s>
+RAW_FLOOD = r'''
+import os, random, socket, struct, sys, time
+iface, dst_mac, dst_ip, pps, secs = sys.argv[1], sys.argv[2], sys.argv[3], float(sys.argv[4]), float(sys.argv[5])
+def csum(b):
+    b += b"\0" * (len(b) % 2)
+    s = sum(struct.unpack("!%dH" % (len(b) // 2), b)); s = (s >> 16) + (s & 0xffff); s += s >> 16
+    return ~s & 0xffff
+src_ip = socket.inet_aton(os.popen("ip -4 -o addr show " + iface).read().split()[3].split("/")[0])
+sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW); sock.bind((iface, 0))
+end, n = time.time() + secs, 0
+while time.time() < end:
+    src = bytes([0x02] + [random.randrange(256) for _ in range(5)])
+    icmp = struct.pack("!BBHHH", 8, 0, 0, n & 0xffff, 1) + b"sentinel"
+    icmp = icmp[:2] + struct.pack("!H", csum(icmp)) + icmp[4:]
+    ip = struct.pack("!BBHHHBBH4s4s", 0x45, 0, 20 + len(icmp), n & 0xffff, 0, 64, 1, 0, src_ip, socket.inet_aton(dst_ip))
+    ip = ip[:10] + struct.pack("!H", csum(ip)) + ip[12:]
+    sock.send(bytes.fromhex(dst_mac.replace(":", "")) + src + b"\x08\x00" + ip + icmp)
+    n += 1
+    time.sleep(1 / pps)
+'''
+
+
+def fake_mac_flood(host, dst, pps, secs):
+    """Start a random-source-MAC flood from a Mininet host; returns the process."""
+    return host.popen([sys.executable, "-c", RAW_FLOOD, host.defaultIntf().name, dst.MAC(), dst.IP(),
+                       str(pps), str(secs)])
+
+
+def audit_actions(port_key, since=0):
+    lines = [json.loads(l) for l in open(AUDIT)][since:]
+    return [a["action"] for a in lines if (a["switch"], a["port"]) == port_key]
+
+
+def audit_len():
+    return sum(1 for _ in open(AUDIT)) if os.path.exists(AUDIT) else 0
+
+
 def ping_loss(src, dst, count=10, interval=0.2):
     out = src.cmd(f"ping -c {count} -i {interval} -W 1 {dst.IP()}")
     m = re.search(r"(\d+(?:\.\d+)?)% packet loss", out)
@@ -145,6 +184,9 @@ def main():
         # 1. Rule installed fast + meter really drops
         t0 = time.time()
         r = alert(S1, 1)
+        # Attack traffic from h1 during sections 1-3 (50 pkt/s = 300 per 6 s, above FLOOD_BLOCK_PKTS),
+        # so the engine keeps blocking while these checks run. Stopped before section 4.
+        h1.cmd(f"ping -i 0.02 {net.get('h4').IP()} > /dev/null 2>&1 &")
         dt = wait_for(lambda: re.search(r"meter[=:]\d", ofctl("dump-meters", "s1")) and sentinel_flows("s1"), 5)
         check("flood -> meter + metered flow", r["action"] == "meter" and len(r["rule_ids"]) == 2, str(r))
         check("meter and flow visible in OVS within 2 s", dt is not None and dt <= 2, f"{dt and round(dt, 2)} s")
@@ -167,6 +209,7 @@ def main():
         check("Sentinel rules survive ONOS reconciliation (~16 s later)", len(sentinel_flows("s1")) == 2)
 
         # 4. Clean rollback
+        h1.cmd("pkill -f 'ping -i 0.02'")
         r = post("/release", {"switch": S1, "port": "1"})
         gone = wait_for(lambda: not sentinel_flows("s1") and not re.search(r"meter[=:]\d", ofctl("dump-meters", "s1")), 5)
         check("release leaves no Sentinel flow or meter", r["action"] == "release:manual" and gone is not None)
@@ -266,17 +309,50 @@ def main():
               and len(meters) == 1 and len(flows) == 1, f"{r} meters={len(meters)} flows={len(flows)}")
         post("/release", {"switch": S2, "port": "1"})
 
-        # 5e. Re-offender: auto release after 30 s quiet, the attack comes back -> straight to drop
-        alert(S2, 2, "flood")
-        released = wait_for(lambda: f"{S2} 2" not in active(), 45)
-        check("flood auto-released after 30 s quiet", released is not None and 28 <= released <= 35,
+        # 5e. Flood release from measurements, no timer (BLOCK <-> SAMPLE), with real fake-MAC floods
+        #     from h5 (s3 port 1): fast flood -> blocked; slow flood -> sampled, fake MACs seen ->
+        #     blocked again; attack over -> sampled, no new hosts -> released.
+        h5 = net.get("h5")
+        k31, n0 = (S3, "1"), audit_len()
+        fast = fake_mac_flood(h5, h2, 80, 60)
+        alert(S3, 1, "flood")
+        for _ in range(16):  # the detector keeps reporting the port for 16 s
+            alert(S3, 1, "flood")
+            time.sleep(1)
+        time.sleep(25)
+        st = json.loads(get("/status")).get(f"{S3} 1", {})
+        check("fast fake-MAC flood (80 pkt/s): meter, then drop after 15 s, still blocked 40 s in",
+              st.get("action") == "drop" and st.get("phase") == "block" and (st.get("measured") or 0) > 200,
+              f"{st.get('action')}/{st.get('phase')}, {st.get('measured')} dropped packets per 6 s")
+        fast.kill()
+        slow = fake_mac_flood(h5, h2, 8, 60)
+        cycled = wait_for(lambda: "reblock" in audit_actions(k31, n0), 45)
+        acts = audit_actions(k31, n0)
+        check("slow fake-MAC flood (8 pkt/s): sampled, new hosts seen -> drop rule again",
+              cycled is not None and "sample" in acts, f"{acts}")
+        slow.kill()
+        released = wait_for(lambda: f"{S3} 1" not in active(), 60)
+        last = [json.loads(l) for l in open(AUDIT)][-1]
+        check("attack over: sampled, no new hosts twice -> released, no rules left", released is not None
+              and last["action"] == "release:auto" and not [l for l in sentinel_flows("s3") if "in_port=1" in l],
+              f"after {released and round(released)} s, {last.get('new_hosts_per_check')} new hosts per check")
+        check("h5 reachable after the release", ping_loss(h5, h2, count=5) == 0)
+
+        # 5f. Spoofing release from the MAC-drop rule's counter: kept while spoofed frames arrive
+        check("spoof h6 again for the counter test", spoof_and_wait() is not None)
+        r = alert(S1, 2, "spoofing")
+        h3.cmd(f"ping -i 0.2 {h2.IP()} > /dev/null 2>&1 &")  # h3 keeps sending as h6: every frame hits the rule
+        time.sleep(30)
+        st = json.loads(get("/status")).get(f"{S1} 2", {})
+        check("spoofed frames still arriving -> MAC block kept after 30 s", r["action"] == "drop_mac"
+              and st.get("phase") == "spoof" and (st.get("measured") or 0) > 0,
+              f"{st.get('measured')} spoofed frames per 6 s")
+        h3.cmd("pkill -f 'ping -i 0.2'")
+        released = wait_for(lambda: f"{S1} 2" not in active(), 40)
+        check("no more spoofed frames (2 checks) -> released", released is not None,
               f"after {released and round(released)} s")
-        r = alert(S2, 2, "flood")
-        flows = sentinel_flows("s2")
-        check("re-offender within 5 min -> straight to drop, no meter", r["action"] == "drop"
-              and any("priority=50000" in l and "in_port=2" in l and "actions=drop" in l for l in flows)
-              and not re.search(r"meter[=:]\d", ofctl("dump-meters", "s2")), str(r))
-        post("/release", {"switch": S2, "port": "2"})
+        recovered = unspoof_and_recover()
+        check("h6 reachable after the spoofing release", recovered is not None)
 
         # 6. Low confidence -> unknown playbook
         r = alert(S2, 1, "flood", conf=0.3)

@@ -6,6 +6,9 @@ import urllib.request
 
 ONOS = os.environ.get("ONOS_URL", "http://127.0.0.1:8181/onos/v1")
 AUTH = "Basic " + base64.b64encode(os.environ.get("ONOS_AUTH", "onos:rocks").encode()).decode()
+# How long to wait for ONOS. Under a heavy flood a single REST call can take several seconds;
+# giving up too early leaves the attacking port unprotected.
+TIMEOUT = float(os.environ.get("ONOS_TIMEOUT", 10))
 APP = "org.onosproject.rest"
 
 
@@ -16,7 +19,7 @@ def _req(method, path, body=None):
         data = json.dumps(body).encode()
         headers["Content-Type"] = "application/json"
     r = urllib.request.Request(ONOS + path, data=data, method=method, headers=headers)
-    with urllib.request.urlopen(r, timeout=3) as resp:
+    with urllib.request.urlopen(r, timeout=TIMEOUT) as resp:
         raw = resp.read()
         return resp.headers.get("Location"), (json.loads(raw) if raw else None)
 
@@ -71,6 +74,14 @@ def purge_mac_flows(mac):
     for f in stale:
         delete_flow(f["deviceId"], f["id"])
     return len(stale)
+
+
+def flow_packets(dev, flow_id):
+    """(packets, refreshed_at) for one flow rule: packets that matched it since it was installed,
+    and when ONOS last read that count from the switch (s). ONOS refreshes it about every 5 s."""
+    _, data = _req("GET", f"/flows/{dev}/{flow_id}")
+    f = data["flows"][0]
+    return int(f.get("packets", 0)), f.get("lastSeen", 0) / 1000.0
 
 
 def infra_ports():

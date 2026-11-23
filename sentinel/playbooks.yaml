@@ -1,24 +1,34 @@
 # One playbook per attack type the detector can send. Anything else, or
 # confidence under 0.6, falls back to "unknown".
-# release_after_quiet_s: auto rollback once the score stayed under tau this long.
+#
+# No timer ever removes a rule. "release" says how the end of the attack is measured;
+# the thresholds are settings in .env (see .env.example and docs/MITIGATION_README.md):
+#   flood_cycle    BLOCK: read the counter of the port's rule every FLOOD_BLOCK_CHECK_S (6 s).
+#                  More than FLOOD_BLOCK_PKTS packets per check -> keep blocking.
+#                  Fewer -> SAMPLE: replace it with a meter at FLOOD_SAMPLE_PPS (8 pkt/s) to the
+#                  controller, and every FLOOD_SAMPLE_CHECK_S (3 s) count the new hosts (MACs) on
+#                  that port: more than FLOOD_NEW_HOSTS twice in a row -> back to the drop rule;
+#                  fewer three times in a row (9 s, longer than a pulsed flood's pause) -> release.
+#   spoof_counter  read the MAC-drop rule's counter every SPOOF_CHECK_S (6 s): only spoofed frames
+#                  can match it, so at most SPOOF_MAX_PKTS (0) twice in a row -> release.
+#   (none)         released by a person only (POST /release).
 
 flood:                        # S4 flood and S6 pulsed flood
-  action: meter
+  action: meter               # at the alert: at most 2 packets/s
   rate_pps: 2
-  escalate_to_drop_after_s: 15
-  release_after_quiet_s: 30
+  escalate_to_drop_after_s: 15  # then a drop rule if the detector still reports the port
+  release: flood_cycle
 
 slow_exhaustion:              # S5
   action: meter
   rate_pps: 2
-  release_after_quiet_s: 60
+  release: flood_cycle
 
 spoofing:                     # S7: drop the victim's MAC on the impostor port only
   action: drop_victim_mac
-  release_after_quiet_s: 60
+  release: spoof_counter
 
 unknown:                      # meter only, a human decides (POST /release)
   action: meter
   rate_pps: 2
   flag_human: true
-  release_after_quiet_s: null

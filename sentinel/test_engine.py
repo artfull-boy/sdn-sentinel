@@ -1,4 +1,5 @@
-"""Offline check of playbooks, guardrails, rollback and the HTTP API, with a fake ONOS.
+"""Offline check of playbooks, guardrails, the measurement-based release and the HTTP API,
+with a fake ONOS (simulated time, switch counters and host list).
 Run: ./start-mitigation.sh test   (or: python3 sentinel/test_engine.py)"""
 import json
 import os
@@ -18,9 +19,9 @@ import engine  # noqa: E402
 
 onos = engine.onos  # patch the module object the engine really uses
 SW = "of:0000000000000001"
-H3, H6 = "00:00:00:00:00:03", "00:00:00:00:00:06"
+H1, H3, H6 = "00:00:00:00:00:01", "00:00:00:00:00:03", "00:00:00:00:00:06"
 LIVE, counter = set(), iter(range(100, 10**6))
-HOSTS = [(H6, (SW, "6")), (H3, (SW, "2"))]  # h6 lives on port 6, h3 on port 2
+HOSTS = [(H1, (SW, "1")), (H6, (SW, "6")), (H3, (SW, "2"))]  # h1 on port 1, h3 on port 2, h6 on port 6
 
 
 def fake(kind):
@@ -32,7 +33,7 @@ def fake(kind):
 
 
 onos.infra_ports = lambda: {(SW, "3")}  # s1 port 3 goes to another switch
-onos.hosts = lambda: HOSTS
+onos.hosts = lambda: list(HOSTS)
 onos.add_meter = fake("meter")
 onos.meter_port = onos.drop_port = onos.drop_mac = fake("flow")
 onos.delete_flow = lambda sw, rid: LIVE.discard(f"flow:{rid}")
@@ -41,6 +42,56 @@ PURGED = []
 onos.purge_mac_flows = PURGED.append
 engine.AUDIT = os.path.join(tempfile.mkdtemp(), "audit.jsonl")
 engine.GRAFANA = ""
+
+# Simulated time and switch: counters per flow rule, copied by "ONOS" every 5 s, like the real one
+CLOCK = [1_000_000.0]
+COUNTS, SNAP, SNAP_AT = {}, {}, [CLOCK[0]]
+fake_macs = iter(range(1, 10**6))
+engine.clock = lambda: CLOCK[0]
+BORN = {}  # flow id -> creation time
+
+
+def fake_flow(*args):
+    rid = fake("flow")(*args)
+    BORN[rid] = CLOCK[0]
+    return rid
+
+
+def flow_packets(sw, fid):
+    # Like real ONOS: a new rule's counter is only reported after a later poll; until then 0,
+    # "refreshed" at its creation time (seen live right after the flood escalation)
+    if fid not in SNAP:
+        return 0, BORN.get(fid, SNAP_AT[0])
+    return SNAP[fid], SNAP_AT[0]
+
+
+onos.meter_port = onos.drop_port = onos.drop_mac = fake_flow
+onos.flow_packets = flow_packets
+
+
+def run(seconds, traffic=None, fake_mac_rate=None, hot=False):
+    """Advance time 1 s at a time. traffic = {port: packets/s sent on that port}; fake_mac_rate =
+    {port: packets/s of them with a new random MAC}; hot = the detector keeps reporting those ports."""
+    for _ in range(int(seconds)):
+        CLOCK[0] += 1
+        for port, pps in (traffic or {}).items():
+            m = engine.ACTIVE.get((SW, port))
+            if m and any(r.startswith("flow:") for r in m["rules"]):
+                fid = [r.split(":", 1)[1] for r in m["rules"] if r.startswith("flow:")][-1]  # highest priority
+                COUNTS[fid] = COUNTS.get(fid, 0) + pps
+        for port, rate in (fake_mac_rate or {}).items():
+            m = engine.ACTIVE.get((SW, port))
+            # Only packets that reach ONOS create hosts: none while blocked, at most the meter's
+            # rate while sampling, all of them when the port has no rule.
+            visible = rate if not m else (min(rate, engine.FLOOD_SAMPLE_PPS) if m["phase"] == "sample" else 0)
+            for _ in range(int(visible)):
+                n = next(fake_macs)
+                HOSTS.append((f"02:00:00:{n >> 16 & 255:02x}:{n >> 8 & 255:02x}:{n & 255:02x}", (SW, port)))
+        if CLOCK[0] - SNAP_AT[0] >= 5:
+            SNAP.clear()
+            SNAP.update({f: c for f, c in COUNTS.items() if CLOCK[0] - BORN.get(f, 0) >= 6})  # new rules: a poll later
+            SNAP_AT[0] = CLOCK[0]
+        engine.tick(now=CLOCK[0], hot={(SW, p) for p in (traffic or {})} if hot else set())
 
 
 def alert(port, typ="flood", conf=0.9, **more):
@@ -52,8 +103,16 @@ def release(port):
     return engine.release({"switch": SW, "port": port})
 
 
+def audit_lines():
+    return [json.loads(line) for line in open(engine.AUDIT)]
+
+
 def last_audit():
-    return json.loads(open(engine.AUDIT).read().splitlines()[-1])
+    return audit_lines()[-1]
+
+
+def actions_since(n, port):
+    return [a["action"] for a in audit_lines()[n:] if a["port"] == port and not a["action"].startswith("refused")]
 
 
 def new_minute():  # forget earlier actions so the 5 per minute guardrail doesn't interfere
@@ -61,7 +120,6 @@ def new_minute():  # forget earlier actions so the 5 per minute guardrail doesn'
 
 
 engine.learn_hosts()
-t0 = time.time()
 
 # Guardrail: switch-to-switch port is refused
 assert alert("3")["action"] == "refused:infra_port"
@@ -83,45 +141,78 @@ assert alert("14")["action"] == "refused:onos_unreachable" and calls and (SW, "1
 onos.infra_ports = real_infra
 engine.refresh_infra()
 
-# Flood: meter + metered flow, duplicate refused, drop after 15 s while hot, release after 30 s quiet
+# ---- Flood: meter at the alert, drop after 15 s, then the BLOCK <-> SAMPLE cycle, no timer -------
+n0 = len(audit_lines())
 r = alert("1")
-assert r["action"] == "meter" and len(r["rule_ids"]) == 2, r
+m1 = engine.ACTIVE[(SW, "1")]
+assert r["action"] == "meter" and len(r["rule_ids"]) == 2 and m1["phase"] == "block", r
 assert alert("1")["action"] == "refused:duplicate"
-engine.tick(now=t0 + 16, hot={(SW, "1")})
-assert len(engine.ACTIVE[(SW, "1")]["rules"]) == 3 and engine.ACTIVE[(SW, "1")]["action"] == "drop"
-engine.tick(now=t0 + 16 + 31, hot=set())
-assert (SW, "1") not in engine.ACTIVE and not LIVE, LIVE
+run(16, {"1": 80}, {"1": 80}, hot=True)               # 80 pkt/s, a new fake MAC on each packet
+assert m1["action"] == "drop" and len(m1["rules"]) == 3, m1  # escalated after 15 s
+run(120, {"1": 80}, {"1": 80})                         # a long attack: 480 packets per 6 s > 200
+assert m1["phase"] == "block" and m1["measured"] == 480, m1["measured"]
+# (no false SAMPLE right after the escalation, when ONOS has not reported the new drop rule yet)
+assert "sample" not in actions_since(n0, "1"), actions_since(n0, "1")
+# The attacker slows down to 8 pkt/s (48 per 6 s <= 200): SAMPLE, where its fake MACs show up
+# (up to 8 x 3 = 24 per check > 5), twice in a row -> back to the drop rule
+run(40, {"1": 8}, {"1": 8})
+acts = actions_since(n0, "1")
+assert acts[:2] == ["meter", "drop"] and "sample" in acts and "reblock" in acts, acts
+reblock = [a for a in audit_lines() if a["action"] == "reblock"][0]
+assert reblock["new_hosts_per_check"] > engine.FLOOD_NEW_HOSTS, reblock
+# The attack stops; h1 keeps normal traffic (5 pkt/s, its own MAC only): SAMPLE, no new hosts
+# three times in a row -> released, no rules left
+run(30, {"1": 5})
+assert (SW, "1") not in engine.ACTIVE and not LIVE, (engine.ACTIVE.get((SW, "1")), LIVE)
+line = last_audit()
+assert line["action"] == "release:auto" and line["new_hosts_per_check"] <= engine.FLOOD_NEW_HOSTS, line
 
-# Re-offender: the same port attacked again within 5 min of an automatic release goes straight to drop,
-# is not escalated a second time, and waits 4 x 30 s before the next release
-r = alert("1")
-assert r["action"] == "drop" and len(r["rule_ids"]) == 1 and last_audit()["reoffend"] is True, r
-now = time.time()
-engine.tick(now=now + 16, hot={(SW, "1")})
-assert len(engine.ACTIVE[(SW, "1")]["rules"]) == 1
-engine.tick(now=now + 16 + 60, hot=set())
-assert (SW, "1") in engine.ACTIVE
-engine.tick(now=now + 16 + 121, hot=set())
-assert (SW, "1") not in engine.ACTIVE and not LIVE
+# A counter that goes down (rule reinstalled, switch restarted) is only a new baseline: no decision
+new_minute()
+alert("9")
+m9 = engine.ACTIVE[(SW, "9")]
+run(12, {"9": 80})
+for fid in list(COUNTS):
+    COUNTS[fid] = SNAP[fid] = 0
+run(6, {"9": 80})
+assert m9["phase"] == "block", m9["phase"]
+release("9")
 
-# Spoofing from memory: h6 now shows up on port 2, drop h6's MAC there only
-HOSTS[:] = [(H6, (SW, "2")), (H3, (SW, "2"))]
+# Slow flood (S5): meter only (no escalation). 8 pkt/s is under the packet threshold, so it is
+# sampled at once, and its fake MACs put the drop rule in place
+new_minute()
+n0 = len(audit_lines())
+assert alert("5", "slow_exhaustion")["action"] == "meter"
+run(30, {"5": 8}, {"5": 8})
+acts = actions_since(n0, "5")
+assert acts[0] == "meter" and "sample" in acts and "reblock" in acts, acts
+run(40)  # attack over
+assert (SW, "5") not in engine.ACTIVE and not LIVE, acts
+
+# ---- Spoofing: the MAC-drop rule's counter; any spoofed frame keeps the block --------------------
+HOSTS[:] = [h for h in HOSTS if not h[0].startswith("02:")] + [(H6, (SW, "2"))]  # h6 now seen on port 2
+HOSTS.remove((H6, (SW, "6")))
 new_minute()
 r = alert("2", "spoofing")
 assert r["action"] == "drop_mac" and r["rule_ids"][1] == "mac:" + H6, r
+run(60, {"2": 0.5})  # one spoofed frame every 2 s for a minute: kept
+assert (SW, "2") in engine.ACTIVE and engine.ACTIVE[(SW, "2")]["measured"] > 0
+run(25)              # no spoofed frame for 2 checks in a row: released, stale fwd flows purged
+assert (SW, "2") not in engine.ACTIVE and PURGED == [H6], PURGED
+assert last_audit()["action"] == "release:auto" and last_audit()["spoofed_per_check"] == 0
 
-# Low confidence becomes unknown: meter + flag, never auto released; spoofing rolls back after 60 s
+# Low confidence becomes unknown: meter + flag, only a person releases it
+new_minute()
 assert alert("4", conf=0.3)["action"] == "meter+flag_human"
-engine.tick(now=t0 + 1000, hot=set())
-assert (SW, "4") in engine.ACTIVE
-assert (SW, "2") not in engine.ACTIVE and PURGED == [H6]  # and h6's stale fwd flows were purged
+run(120)
+assert (SW, "4") in engine.ACTIVE and engine.ACTIVE[(SW, "4")]["phase"] is None
 
-# Upgrade unknown -> flood: the unknown meter is replaced by the flood playbook (not a duplicate)
+# Upgrade unknown -> flood: the unknown meter is replaced by the flood playbook, which then runs normally
 old = set(engine.ACTIVE[(SW, "4")]["rules"])
 r = alert("4", "flood")
 assert r["action"] == "meter" and last_audit()["upgraded_from"] == "unknown", r
-assert engine.ACTIVE[(SW, "4")]["type"] == "flood" and not (old & LIVE) and LIVE == set(r["rule_ids"])
-engine.tick(now=time.time() + 16, hot={(SW, "4")})  # and it escalates like any flood
+assert engine.ACTIVE[(SW, "4")]["phase"] == "block" and not (old & LIVE) and LIVE == set(r["rule_ids"])
+run(16, {"4": 80}, hot=True)
 assert engine.ACTIVE[(SW, "4")]["action"] == "drop"
 release("4")
 
@@ -133,7 +224,7 @@ assert r["action"] == "drop_mac" and LIVE == {r["rule_ids"][0]}, (r, LIVE)
 release("2")
 
 # ONOS flipped h6 back home: no victim on port 2 right now, so the upgrade is refused (stays metered)...
-HOSTS[:] = [(H6, (SW, "6")), (H3, (SW, "2"))]
+HOSTS[:] = [(H6, (SW, "6")) if h[0] == H6 else h for h in HOSTS]
 new_minute()
 assert alert("2", "unknown")["action"] == "meter+flag_human"
 assert alert("2", "spoofing")["action"] == "refused:duplicate" and engine.ACTIVE[(SW, "2")]["type"] == "unknown"
@@ -162,12 +253,12 @@ del PURGED[:]
 release("2")
 assert PURGED == [H6] and not engine.ACTIVE and not LIVE, (PURGED, LIVE)
 
-# Pin keeps a flood mitigation past its rollback time
+# Pin: no automatic change at all (no sampling, no release), even with no traffic
 new_minute()
 alert("5")
 engine.pin({"switch": SW, "port": "5"})
-engine.tick(now=t0 + 2000, hot=set())
-assert (SW, "5") in engine.ACTIVE
+run(60)
+assert (SW, "5") in engine.ACTIVE and engine.ACTIVE[(SW, "5")]["action"] == "meter"
 release("5")
 
 # Rate limit: 5 new mitigations in a minute are fine, the 6th is refused
@@ -184,7 +275,7 @@ alert("4", conf=0.3)
 text = engine.metrics()
 assert f'sentinel_flag_human{{switch="{SW}",port="4"}} 1' in text
 assert (f'sentinel_mitigation_info{{switch="{SW}",port="4",type="unknown",action="meter+flag_human",'
-        f'pinned="0",reoffend="0",flag_human="1"}} 1') in text
+        f'phase="manual",pinned="0",flag_human="1"}} 1') in text
 assert f'sentinel_mitigation_active{{switch="{SW}",port="4"}} 1' in text
 
 # HTTP API: release page, origin check, form and JSON posts
@@ -208,7 +299,7 @@ def form_post(origin):
 
 
 code, page = http("/release")
-assert code == 200 and "Release</button>" in page and "meter+flag_human" in page
+assert code == 200 and "Release</button>" in page and "meter+flag_human" in page and "manual release" in page
 code, page = http("/release?" + urllib.parse.urlencode({"switch": SW, "port": "4"}))
 assert code == 200 and "unknown" in page
 code, page = http("/release?" + urllib.parse.urlencode({"switch": "<script>x</script>", "port": "1"}))
@@ -224,8 +315,10 @@ port4 = json.dumps({"switch": SW, "port": "4"}).encode()
 code, body = http("/pin", port4)
 assert code == 200 and json.loads(body)["action"] == "pin" and engine.ACTIVE[(SW, "4")]["pinned"], body
 assert 'pinned="1"' in http("/metrics")[1]
-engine.tick(now=time.time() + 1000, hot=set())  # far past the 30 s rollback: a pinned port stays
+run(60)  # no traffic at all, but a pinned port is never changed or released automatically
 assert (SW, "4") in engine.ACTIVE
+status = json.loads(http("/status")[1])[f"{SW} 4"]
+assert status["phase"] == "block" and "known_macs" not in status and "last_count" not in status, status
 code, body = http("/release", port4)
 assert code == 200 and json.loads(body)["action"] == "release:manual" and (SW, "4") not in engine.ACTIVE
 assert json.loads(http("/pin", port4)[1])["action"] == "refused:not_active"      # nothing to pin
@@ -234,7 +327,7 @@ assert http("/mitigate", b"not json")[0] == 400
 assert http("/mitigate", b'{"port": "4"}')[0] == 400
 assert http("/nope")[0] == 404
 code, text = http("/metrics")
-assert code == 200 and "# TYPE sentinel_mitigation_info gauge" in text
+assert code == 200 and "# TYPE sentinel_mitigation_measured gauge" in text
 code, body = http("/status")
 assert code == 200 and json.loads(body) == {}
 srv.shutdown()
@@ -267,16 +360,18 @@ engine.GRAFANA = ""
 graf.shutdown()
 release("4")
 
-# Dry run: audit line written, nothing installed
+# Dry run: audit line written, nothing installed, so nothing to measure: released by hand only
 engine.DRY_RUN = True
 new_minute()
 r = alert("9")
 assert r["dry_run"] and r["rule_ids"] == [] and not LIVE
+run(60)
+assert (SW, "9") in engine.ACTIVE
 
 # The engine also imports as a package: python -m sentinel.engine
 subprocess.run([sys.executable, "-c", "import sentinel.engine"], cwd=os.path.dirname(HERE), check=True)
 
-lines = [json.loads(line) for line in open(engine.AUDIT)]
+lines = audit_lines()
 need = {"ts", "switch", "port", "type", "score", "confidence", "action", "onos_status", "rule_ids"}
 assert all(need <= line.keys() for line in lines)
-print(f"ok: {len(lines)} audit lines, all guardrails, playbooks and API behave")
+print(f"ok: {len(lines)} audit lines, all guardrails, playbooks, release checks and API behave")

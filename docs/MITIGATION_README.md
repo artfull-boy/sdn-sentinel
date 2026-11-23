@@ -18,7 +18,7 @@ sudo mn -c && sudo python3 topo/lab_topo.py --link-s3  # topology; then type: pi
 ```bash
 ./start-mitigation.sh                                 # the engine, in another terminal
 ```
-It prints `sentinel engine on 127.0.0.1:9202  dry_run=False  tau=...  hosts_known=...`.
+It prints `sentinel engine on 127.0.0.1:9202  dry_run=False  tau=...  hosts_known=...` followed by the release thresholds it uses.
 Stop it with **Ctrl-C**: it removes every rule it installed before exiting.
 
 Try it from a 4th terminal:
@@ -69,31 +69,65 @@ then links the system Mininet library into it (`system-mininet.pth`), which only
 
 ### 4.1 Playbooks (`sentinel/playbooks.yaml`)
 
-| Attack type sent by the detector | Countermeasure on that port | Removed automatically after |
+| Attack type sent by the detector | Countermeasure on that port | Removed automatically when |
 |---|---|---|
-| `flood` (S4, S6 pulsed) | Limit to 2 packets/s. If still attacking after 15 s, drop everything from the port | 30 s with score under τ |
-| `slow_exhaustion` (S5) | Limit to 2 packets/s | 60 s with score under τ |
-| `spoofing` (S7) | Drop only the frames carrying the victim's MAC on the attacker's port | 60 s with score under τ |
-| `unknown`, any other type, or confidence under 0.6 | Limit to 2 packets/s and flag for a person (`flag_human`) | never by itself (see 4.2) |
+| `flood` (S4, S6 pulsed) | Limit to 2 packets/s. If the detector still reports the port after 15 s, drop everything from the port | the flood cycle says the attack is over (4.2) |
+| `slow_exhaustion` (S5) | Limit to 2 packets/s | the flood cycle says the attack is over (4.2) |
+| `spoofing` (S7) | Drop only the frames carrying the victim's MAC on the attacker's port | no spoofed frame on 2 checks in a row (4.2) |
+| `unknown`, any other type, or confidence under 0.6 | Limit to 2 packets/s and flag for a person (`flag_human`) | never by itself (see 4.3) |
 
-**"Still under attack"** is known in two ways: every repeated `/mitigate` call for the port, and, if τ is known,
-`sentinel_anomaly_score` read from the detector's `/metrics` every second. Both reset the "calm" timer.
+**No timer ever removes a rule.** The only time-based step is the flood escalation from the project plan
+(limit at the alert, drop after 15 s), and it needs the detector to still report the port: a repeated
+`/mitigate` call, or, if τ is known, `sentinel_anomaly_score` above τ on the detector's `/metrics`.
 
-### 4.2 `unknown` first, then a named type: upgrade
+### 4.2 Release: decided from measurements
+The detector can't tell when an attack ends: once the engine blocks a port, the attacker's packets are dropped
+in the switch and never reach ONOS, so the detector sees a calm port while the attack may still be running.
+So the engine measures in the switch itself. All thresholds are settings in `.env` (section 5).
+
+**Flood and slow flood: a BLOCK ↔ SAMPLE cycle.**
+```
+alert ─▶ BLOCK  (2 pkt/s limit, then drop after 15 s if the detector still reports the port)
+           every FLOOD_BLOCK_CHECK_S (6 s): packets that hit the port's rule since the last check
+             ├─ more than FLOOD_BLOCK_PKTS (200) ─▶ stay in BLOCK
+             └─ fewer                            ─▶ SAMPLE
+         SAMPLE (rules replaced by a meter letting FLOOD_SAMPLE_PPS = 8 packets/s reach ONOS)
+           every FLOOD_SAMPLE_CHECK_S (3 s): new hosts (MAC addresses) on THAT port since the last check
+             ├─ more than FLOOD_NEW_HOSTS (5), FLOOD_CONFIRM_CHECKS (2) times in a row ─▶ BLOCK again (drop rule)
+             └─ at most that, FLOOD_RELEASE_CHECKS (3) times in a row                  ─▶ released: no rules
+```
+- **Why packets in BLOCK:** the rule's counter (ONOS `GET /flows/<device>/<rule id>` → `packets`) shows how much
+  the port still sends while blocked. ONOS refreshes it about every 5 s, so the check runs every 6 s and a
+  reading ONOS has not refreshed yet is never used.
+- **Why hosts in SAMPLE:** a switch counter only counts packets, it can't tell who sent them. The flood tools
+  use a new random MAC on every packet, and ONOS creates a "host" for each new MAC that reaches it. With the
+  sampling meter a few packets do reach it, so new MACs show up on the attacker's port, while a normal host only
+  ever shows its own MAC. Only hosts located on that switch port count.
+- **Limit of the sample:** at 8 packets/s, at most 24 new MACs can appear in 3 s, so `FLOOD_NEW_HOSTS` must stay
+  well below 24.
+- A slow flood (8 pkt/s) sends fewer than 200 packets per 6 s, so it goes to SAMPLE, where its fake MACs put
+  the drop rule back within about 6 s. A normal host goes to SAMPLE, shows no new MAC, and is released.
+- Each SAMPLE phase during an attack lets a few dozen fake MACs reach ONOS ("phantom hosts"); restarting ONOS
+  between test runs, as the ML detector README recommends, clears them.
+
+**Spoofing: the MAC-drop rule's counter.** Only frames claiming the victim's MAC on the attacker's port can
+match that rule, so every packet it counts is a spoofed frame. Every `SPOOF_CHECK_S` (6 s): more than
+`SPOOF_MAX_PKTS` (0) keeps the block; at most that, `SPOOF_CONFIRM_CHECKS` (2) times in a row, releases it.
+
+**Every step is logged** in `logs/audit.jsonl`: `drop` (escalation), `sample`, `reblock`, `release:auto`, with
+the measured value (`dropped_per_check`, `new_hosts_per_check`, `spoofed_per_check`).
+
+**Not measured, so only released by hand:** `unknown` mitigations, pinned ports, and everything in `DRY_RUN`
+(nothing is installed, so there is nothing to measure).
+
+### 4.3 `unknown` first, then a named type: upgrade
 The detector often says `unknown` first, while its window still holds mostly normal traffic, then names the
 attack a few seconds later. When a port already has an `unknown` mitigation and an alert with a named type
 arrives (`flood`, `slow_exhaustion`, `spoofing`, confidence ≥ 0.6), the engine **removes the unknown rules and
 applies the named playbook**. The audit line has `"upgraded_from": "unknown"`. An upgrade is the same incident,
 so it is not counted in the 5-per-minute limit. If a spoofing upgrade has no victim to block, the port simply
-stays limited (`refused:duplicate`). Any other repeat alert is a duplicate: refused, but it keeps the port "hot".
-
-### 4.3 Re-offenders: no flapping
-Without this, a flood would cycle: limited, dropped, calm, released after 30 s, attack resumes, detected again.
-If a port is attacked again **within 5 minutes of an automatic release**, the engine:
-- goes **straight to the drop** for `flood` and `slow_exhaustion` (no 2 packets/s step), and
-- waits **4 times longer** before the next automatic release (2 min for a flood, 4 min for spoofing).
-
-The audit line has `"reoffend": true`. A manual release does not count (a person decided).
+stays limited (`refused:duplicate`). Any other repeat alert is a duplicate: refused, but it tells the engine the
+detector still reports the port (used by the 15 s flood escalation).
 
 ### 4.4 Finding the spoofing victim
 In this order:
@@ -116,7 +150,7 @@ before any attack.
 |---|---|---|
 | Never touch a switch-to-switch port (read live from ONOS `/links`) | Refused | `refused:infra_port` |
 | ONOS cannot be reached, so links are unknown | Refused (safe default) | `refused:onos_unreachable` |
-| One mitigation per port | Refused, except the `unknown` upgrade (4.2) | `refused:duplicate` |
+| One mitigation per port | Refused, except the `unknown` upgrade (4.3) | `refused:duplicate` |
 | At most 5 new mitigations per minute | The 6th is refused | `refused:rate_limit` |
 | API on `127.0.0.1` only | Not reachable from other machines | |
 | Browser requests only from Grafana or the engine's own page | Other websites get HTTP 403 | |
@@ -133,12 +167,28 @@ which `start-mitigation.sh` loads.
 | `ENGINE_HOST` | `127.0.0.1` | Address the API listens on. Keep the default |
 | `ONOS_URL` | `http://127.0.0.1:8181/onos/v1` | ONOS REST API |
 | `ONOS_AUTH` | `onos:rocks` | ONOS user:password |
-| `SENTINEL_TAU` | read from `models/sentinel_model.joblib` (only if `joblib` and `scikit-learn` are uncommented in `requirements-mitigation.txt`), else none | Threshold τ. Set it in `.env` (template in `.env.example`) once the detector's notebook 02 gives the value. Without it the engine prints `tau=None` and relies on repeated `/mitigate` calls only |
-| `DETECTOR_METRICS` | `http://127.0.0.1:9201/metrics` | Where the engine reads live anomaly scores |
+| `ONOS_TIMEOUT` | `10` | Seconds to wait for each ONOS answer. Under a heavy flood ONOS can take several seconds per call; with a short wait the engine gives up and the port stays unprotected (seen live with 3 s) |
+| `SENTINEL_TAU` | read from `models/sentinel_model.joblib` (only if `joblib` and `scikit-learn` are uncommented in `requirements-mitigation.txt`), else none | Threshold τ, only used for the 15 s flood escalation (4.1). Without it the engine prints `tau=None` and relies on repeated `/mitigate` calls |
+| `DETECTOR_METRICS` | `http://127.0.0.1:9201/metrics` | Where the engine reads live anomaly scores (escalation only) |
 | `GRAFANA_URL` | `http://127.0.0.1:3000` | Where annotations are sent (empty = off) |
 | `GRAFANA_TOKEN` | unset | Grafana service-account token for annotations (preferred, see 7.3) |
 | `GRAFANA_AUTH` | `admin:admin` | Grafana user:password, used only without a token |
 | `ALLOWED_ORIGINS` | unset | Extra comma-separated web origins allowed to POST (e.g. Grafana on another port) |
+
+**Release thresholds (4.2)**, also listed with comments in `.env.example`:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `FLOOD_BLOCK_CHECK_S` | 6 | BLOCK: read the port rule's packet counter this often (ONOS refreshes it every ~5 s) |
+| `FLOOD_BLOCK_PKTS` | 200 | BLOCK: more packets than this per check = keep blocking, else go to SAMPLE |
+| `FLOOD_SAMPLE_PPS` | 8 | SAMPLE: packets/s the sampling meter lets through to ONOS |
+| `FLOOD_SAMPLE_CHECK_S` | 3 | SAMPLE: count new hosts on the port this often |
+| `FLOOD_NEW_HOSTS` | 5 | SAMPLE: more new hosts than this per check = still attacking (must stay well under `FLOOD_SAMPLE_PPS` × `FLOOD_SAMPLE_CHECK_S` = 24) |
+| `FLOOD_CONFIRM_CHECKS` | 2 | SAMPLE: attacking that many checks in a row = back to the drop rule |
+| `FLOOD_RELEASE_CHECKS` | 3 | SAMPLE: calm that many checks in a row = released. 3 checks = 9 s, longer than the 6 s pauses of a pulsed flood (S6), so a pause is not mistaken for the end of the attack |
+| `SPOOF_CHECK_S` | 6 | Spoofing: read the MAC-drop rule's counter this often |
+| `SPOOF_MAX_PKTS` | 0 | Spoofing: more spoofed frames than this per check = keep the block |
+| `SPOOF_CONFIRM_CHECKS` | 2 | Spoofing: at most that, that many checks in a row = released |
 
 ## 6. API reference
 
@@ -179,9 +229,9 @@ Base URL: `http://127.0.0.1:9202` (from inside the VM). Bodies are JSON.
 | `victim_mac` | string | no | Spoofing only: the impersonated MAC, e.g. `"00:00:00:00:00:06"` (see 4.4) |
 
 **Call it every second while the port stays abnormal.** Repeats are refused as duplicates but keep the port
-"hot", which drives escalation and delays the release. They also carry the upgrade from `unknown` (4.2).
+"hot" for the 15 s flood escalation (4.1), and carry the upgrade from `unknown` (4.3). Releases do not depend on them (4.2).
 
-Possible `action` values: `meter`, `drop` (re-offender), `drop_mac`, `meter+flag_human`, `refused:duplicate`,
+Possible `action` values: `meter`, `drop_mac`, `meter+flag_human`, `refused:duplicate`,
 `refused:infra_port`, `refused:rate_limit`, `refused:onos_unreachable`, `failed` (ONOS rejected a rule;
 anything half-installed is removed).
 
@@ -264,11 +314,14 @@ curl -s localhost:9202/status
 ```
 ```json
 {"of:0000000000000001 1": {"type": "flood", "action": "drop", "rules": ["meter:1", "flow:4953...", "flow:4953..."],
-  "started": 1794758324.2, "last_hot": 1794758339.4, "escalated": true, "pinned": false,
-  "reoffend": false, "score": 0.83, "confidence": 0.92}}
+  "started": 1794758324.2, "pinned": false, "score": 0.83, "confidence": 0.92,
+  "phase": "block", "measured": 480.0, "pos": 0, "neg": 0, "last_hot": 1794758339.4, "escalated": true}}
 ```
-Keys are `"<switch> <port>"`. `action` = the current countermeasure (`drop` once a flood escalated),
-`last_hot` = last time the port was seen under attack, `reoffend` = see 4.3. `{}` when nothing is active.
+Keys are `"<switch> <port>"`. `action` = the current countermeasure (`drop`, `sample`, `reblock`…).
+`phase` = where the release logic is (4.2): `block`, `sample`, `spoof`, or `null` (released by hand only).
+`measured` = the last measurement: dropped packets per check (`block`), new hosts per check (`sample`) or
+spoofed frames per check (`spoof`). `pos` / `neg` = how many attacking / calm checks in a row so far.
+`last_hot` = last time the detector reported the port. `{}` when nothing is active.
 
 ### 6.5 `GET /metrics`: for Prometheus and Grafana
 
@@ -283,7 +336,9 @@ sentinel_actions_total{switch="of:0000000000000001",port="2"} 1
 # TYPE sentinel_flag_human gauge
 sentinel_flag_human{switch="of:0000000000000001",port="2"} 1
 # TYPE sentinel_mitigation_info gauge
-sentinel_mitigation_info{switch="of:0000000000000001",port="2",type="unknown",action="meter+flag_human",pinned="0",reoffend="0",flag_human="1"} 1
+sentinel_mitigation_info{switch="of:0000000000000001",port="2",type="flood",action="sample",phase="sample",pinned="0",flag_human="0"} 1
+# TYPE sentinel_mitigation_measured gauge
+sentinel_mitigation_measured{switch="of:0000000000000001",port="2",phase="sample"} 14
 ```
 
 | Metric | Meaning |
@@ -291,12 +346,13 @@ sentinel_mitigation_info{switch="of:0000000000000001",port="2",type="unknown",ac
 | `sentinel_mitigation_active` | 1 while the port is mitigated, 0 after release (shared contract) |
 | `sentinel_actions_total` | Actions taken on the port: installs, escalations, upgrades (shared contract) |
 | `sentinel_flag_human` | 1 while the port waits for a person (the `unknown` playbook) |
-| `sentinel_mitigation_info` | One series per active mitigation, details as labels: for a Grafana table |
+| `sentinel_mitigation_info` | One series per active mitigation, details as labels (with `phase`): for a Grafana table |
+| `sentinel_mitigation_measured` | The last release measurement (4.2), labelled with its `phase`: dropped packets, new hosts or spoofed frames per check |
 
 ### 6.6 `GET /release`: the operator page
 
 Open **http://localhost:9202/release** in the VM's browser: a table of the active mitigations (switch, port,
-type, action, how long, pinned) with a **Release** button on each row. Waiting-for-a-person rows are in red.
+type, action, how long, last measurement, pinned) with a **Release** button on each row. Waiting-for-a-person rows are in red.
 `http://localhost:9202/release?switch=of:0000000000000001&port=2` shows only that port; this is what the
 Grafana link opens (section 7.2). The page itself changes nothing: only the button does, with a `POST /release`.
 
@@ -316,11 +372,13 @@ One JSON object per line, one line per decision (refusals included):
 | `dry_run` | always | the engine runs with `DRY_RUN=1` |
 | `alert_ts`, `installed_ts` | new mitigations | `installed_ts - alert_ts` = time to mitigate |
 | `victim_mac` | alert carried one | what the detector claimed (the MAC actually blocked is the `mac:` entry in `rule_ids`) |
-| `upgraded_from` | upgrade (4.2) | always `"unknown"` |
-| `reoffend` | re-offender (4.3) | `true` |
+| `upgraded_from` | upgrade (4.3) | always `"unknown"` |
+| `dropped_per_check` | `sample` | packets that hit the blocked port's rule in the last check (4.2) |
+| `new_hosts_per_check` | `reblock`, `release:auto` (flood) | new hosts on the port in the last sampling check |
+| `spoofed_per_check` | `release:auto` (spoofing) | spoofed frames in the last check |
 
 `onos_status`: `ok`, `dry_run`, `skipped` (nothing sent to ONOS, e.g. a refusal) or `error: ...`.
-Escalations are logged with `action: "drop"`.
+Release-logic steps are logged as `action`: `drop` (15 s escalation), `sample`, `reblock`, `release:auto`.
 
 ## 7. Grafana dashboard
 
@@ -377,14 +435,14 @@ password was changed in `.env`. Failures are ignored: the mitigation never waits
 
 **Detector (Aishwarya)**
 - Call `POST /mitigate` (6.1) after 3 windows above τ, then **every second** while the port stays above τ.
-- Sending `unknown` first is fine; the named type upgrades it (4.2).
+- Sending `unknown` first is fine; the named type upgrades it (4.3).
 - For spoofing, add `victim_mac` (the MAC that showed up away from its home port).
 - Optional: expose `sentinel_anomaly_score{switch,port}` on `:9201/metrics` and give the engine τ
   (`SENTINEL_TAU`), so it also sees the score itself.
 
 **Dashboard (Nkwenti)**
-- Panels and queries: 7.1 and 7.2. Annotations: 7.3. New metrics: `sentinel_flag_human`, `sentinel_mitigation_info`.
-- Timing table: `installed_ts - alert_ts` in `logs/audit.jsonl`; release times from `release:auto` lines.
+- Panels and queries: 7.1 and 7.2. Annotations: 7.3. New metrics: `sentinel_flag_human`, `sentinel_mitigation_info` (with `phase`), `sentinel_mitigation_measured`.
+- Timing table: `installed_ts - alert_ts` in `logs/audit.jsonl`; release times from `release:auto` lines; the BLOCK/SAMPLE cycle from `sample` and `reblock` lines.
 
 **Testbed (Ilias)**
 - During a joint test, run the engine with `DRY_RUN=1` first: the audit log shows the action chosen for each alert.
@@ -394,16 +452,16 @@ password was changed in `.env`. Failures are ignored: the mitigation never waits
 ```bash
 ./start-mitigation.sh test
 ```
-About 2 seconds, fake ONOS: playbooks, guardrails, upgrade, re-offender, victim rules, metrics, the HTTP API
+A few seconds, fake ONOS with simulated counters and hosts: playbooks, guardrails, upgrade, the flood BLOCK/SAMPLE cycle (fast flood, slow flood, attack over, counter reset), the spoofing counter, victim rules, metrics, the HTTP API
 (release page, origin check), Grafana token and the dry run. Prints `ok`.
 
 ```bash
 ./start-mitigation.sh live-check
 ```
-The real test, about 4 minutes. ONOS must be up and **no other Mininet running** (the script starts its own
+The real test. ONOS must be up and **no other Mininet running** (the script starts its own
 topology). It runs every "Expected results" row of the project plan plus the scenarios in section 4
 (no-history spoofing, `unknown` then `spoofing` while ONOS flips the victim back, `unknown` then `flood`,
-a real re-offender, the release page, a pinned flood kept past its release time) and prints `44/44 passed`. Its audit lines go to
+real fake-MAC floods through the BLOCK/SAMPLE cycle, continuous spoofing kept then released, the release page, a pinned flood) and prints `50/50 passed` (about 4 minutes). Its audit lines go to
 `logs/live_check_audit.jsonl` so the real audit log stays clean. It asks for sudo because Mininet needs root;
 the engine it starts runs as your own user.
 
